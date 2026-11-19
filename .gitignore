@@ -1,0 +1,8 @@
+/target
+.cargo/
+*.swp
+.DS_Store
+PROGRESS.md
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts

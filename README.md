@@ -2,17 +2,17 @@
 
 Eidolon keeps an entity's state as one sealed thing, an eidolon, which opens in an Adytum cell and moves between machines. An eidolon is a set of facets, a folder or a browser profile, and exactly one machine holds its seat at a time.
 
-It sits beside XenoNet in this repository. XenoNet stays the only way across machines, and Eidolon opens no network listener beyond 127.0.0.1.
+It uses Adytum for cells and three of XenoNet's crates (`xenonet-id`, `xenonet-os`, `xenonet-text`) for keys, files and text. Across machines it moves over a stream you name, and it opens no network listener beyond 127.0.0.1.
 
-[Preview the draft marks](../adytum/brand/drafts.html) for Adytum and Eidolon.
+The draft marks for Eidolon are in `brand/`; Adytum's repository previews both.
 
 ## Build
 
 ```text
-npm run cargo -- build -p adytum-cli -p eidolon-cli
+cargo build -p eidolon-cli
 ```
 
-The binary is `target/debug/eidolon`. It needs Adytum's cells, so run `adytum doctor` first ([Adytum](../adytum/README.md)).
+The binary is `target/debug/eidolon`. It needs Adytum's cells, so build Adytum and run `adytum doctor` first (see Adytum's README).
 
 ## Commands
 
@@ -66,7 +66,7 @@ Each rule starts as a test that proves the refusal.
 
 ## Where the code is
 
-`eidolon/crates/`, members of the root workspace.
+`crates/`, members of the workspace.
 
 | Crate | Job |
 |---|---|
@@ -86,21 +86,22 @@ Each rule starts as a test that proves the refusal.
 ## Tests
 
 ```text
-npm run cargo -- test -p eidolon-cli
-npm run cargo -- test -p eidolon-pack -p eidolon-move -p eidolon-vault
+cargo test -p eidolon-cli
+cargo test -p eidolon-pack -p eidolon-move -p eidolon-vault
 ```
 
 The live tests make real VMs named `adytum-test-*` in a Lima folder of their own and delete them at the end, also when a step fails. The first moves an eidolon between two cells. The second moves a folder facet and a browser facet.
 
 ```text
-ADYTUM_LIVE=1 npm run cargo -- test -p eidolon-cli --test live -- --nocapture
-ADYTUM_LIVE=1 npm run cargo -- test -p eidolon-cli --test live_browser -- --nocapture
+ADYTUM_LIVE=1 cargo test -p eidolon-cli --test live -- --nocapture
+ADYTUM_LIVE=1 cargo test -p eidolon-cli --test live_browser -- --nocapture
 ```
 
 ## More
 
-- [The guide page](../docs/guide/eidolon.md) for using it with XenoNet.
+- [The guide](docs/guide.md) for using it.
 - [Release notes](RELEASES.md).
-- [A skill for agents that drive the browser](../plugins/xenonet/skills/eidolon-browser/SKILL.md).
-- [Adytum](../adytum/README.md), which makes the cells.
-- [The design](../docs/design/cells.md).
+- [A skill for agents that drive the browser](skills/eidolon-browser/SKILL.md).
+- Adytum, a separate tool that makes the cells.
+- [The design](docs/design.md).
+- [A move as a XenoNet act](docs/xenonet.md), designed and not built.

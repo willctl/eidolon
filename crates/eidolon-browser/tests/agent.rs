@@ -2,7 +2,7 @@
 //! Skipped unless `ADYTUM_LIVE=1`:
 //!
 //! ```text
-//! ADYTUM_LIVE=1 npm run cargo -- test -p eidolon-browser --test agent -- --nocapture
+//! ADYTUM_LIVE=1 cargo test -p eidolon-browser --test agent -- --nocapture
 //! ```
 //!
 //! It makes a cell named `adytum-test-agent-<tag>` under a short temporary

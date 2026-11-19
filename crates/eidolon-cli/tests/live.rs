@@ -2,7 +2,7 @@
 //! through two machines' homes, and the four refusals against live cells.
 //!
 //! Skipped unless `ADYTUM_LIVE=1`. Run it as
-//! `ADYTUM_LIVE=1 npm run cargo -- test -p eidolon-cli --test live -- --nocapture`.
+//! `ADYTUM_LIVE=1 cargo test -p eidolon-cli --test live -- --nocapture`.
 //!
 //! The cells are `adytum-test-a-<n>` and `adytum-test-b-<n>` (booted, wall
 //! `wall_live`) and `adytum-test-c-<n>`, which is only a row in Adytum's

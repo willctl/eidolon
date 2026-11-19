@@ -1,7 +1,7 @@
 //! The browser in a real Lima VM. Skipped unless `ADYTUM_LIVE=1`:
 //!
 //! ```text
-//! ADYTUM_LIVE=1 npm run cargo -- test -p eidolon-browser --test live -- --nocapture
+//! ADYTUM_LIVE=1 cargo test -p eidolon-browser --test live -- --nocapture
 //! ```
 //!
 //! It makes a cell named `adytum-test-browser-<tag>` under a short temporary

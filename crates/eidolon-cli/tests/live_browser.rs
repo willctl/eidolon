@@ -4,7 +4,7 @@
 //! refused, and a second move after a short session sends only what changed.
 //!
 //! Skipped unless `ADYTUM_LIVE=1`. Run it as
-//! `ADYTUM_LIVE=1 npm run cargo -- test -p eidolon-cli --test live_browser -- --nocapture`.
+//! `ADYTUM_LIVE=1 cargo test -p eidolon-cli --test live_browser -- --nocapture`.
 //!
 //! To be quick it makes one base cell, sets it up for the browser once,
 //! stops it, and clones it into cells A and B (a clone takes a moment).
