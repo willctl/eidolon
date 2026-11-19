@@ -403,10 +403,12 @@ impl BrowserTools {
         let (context, id) = self.element(uid)?;
         let guest = format!("{UPLOADS_PATH}/{name}");
         self.driver.copy_in(&self.cell, &source, &guest).await?;
-        // The copy keeps the host file's mode; the browser runs as another
-        // user, so a 0600 file would be unreadable to it.
+        // The copy keeps the host file's mode and is owned by the cell's
+        // admin user; the browser runs as another user, so a 0600 file would
+        // be unreadable to it, and only root may change a file that is not
+        // the cell user's own.
         let chmod: Vec<String> = ["chmod", "0644", guest.as_str()].iter().map(|s| (*s).to_owned()).collect();
-        let done = self.driver.exec(&self.cell, &chmod, ExecOpts::default()).await?;
+        let done = self.driver.exec(&self.cell, &chmod, ExecOpts { root: true, ..ExecOpts::default() }).await?;
         if done.status != Some(0) {
             let stderr = String::from_utf8_lossy(&done.stderr);
             return Err(Error::Driver(format!("The file {name} was copied in but could not be made readable for the browser: {}. Try again.", stderr.trim())));

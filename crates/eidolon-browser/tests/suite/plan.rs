@@ -54,10 +54,13 @@ fn no_argument_is_a_shell_string() {
 }
 
 #[test]
-fn every_command_runs_as_root_through_sudo_or_is_a_read() {
-    for step in provision_plan(Ports::default()).steps {
-        let first = step.argv.first().map(String::as_str);
-        assert!(first == Some("sudo") || first == Some("gpg"), "{:?}", step.argv);
+fn every_command_asks_the_driver_for_root_or_is_a_read_and_none_says_sudo() {
+    for plan in [provision_plan(Ports::default()), start_browser_plan(), start_view_plan("s")] {
+        for step in plan.steps {
+            assert!(!step.argv.contains(&"sudo".to_owned()), "{:?}", step.argv);
+            let program = step.argv.first().map(String::as_str);
+            assert!(step.root || program == Some("gpg"), "{:?} would run unprivileged", step.argv);
+        }
     }
 }
 
@@ -123,12 +126,16 @@ async fn running_the_plan_sends_each_file_as_stdin() {
     });
     provision_plan(Ports::default()).run(driver.as_ref(), &cell()).await.unwrap();
     let execs = driver.execs();
-    let tee =
-        |path: &str| execs.iter().find(|e| e.argv == ["sudo", "tee", path]).map(|e| String::from_utf8(e.stdin.clone().unwrap_or_default()).unwrap_or_default()).unwrap_or_default();
+    let tee = |path: &str| {
+        execs.iter().find(|e| e.root && e.argv == ["tee", path]).map(|e| String::from_utf8(e.stdin.clone().unwrap_or_default()).unwrap_or_default()).unwrap_or_default()
+    };
     assert_eq!(tee("/etc/systemd/system/eidolon-browser.service"), units::units(Ports::default())[0].1);
     assert!(tee("/etc/apt/sources.list.d/mozilla.sources").contains("Signed-By: /etc/apt/keyrings/packages.mozilla.org.asc"));
     // The user was missing, so the guard failed and the user was made.
     assert!(execs.iter().any(|e| e.argv.contains(&"useradd".to_owned())));
+    // Changes to the system ask for root; the guard and the key check do not.
+    assert!(execs.iter().filter(|e| e.argv.contains(&"useradd".to_owned())).all(|e| e.root));
+    assert!(execs.iter().filter(|e| matches!(e.argv.first().map(String::as_str), Some("id" | "gpg"))).all(|e| !e.root));
 }
 
 #[tokio::test]

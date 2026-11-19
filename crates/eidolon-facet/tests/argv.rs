@@ -40,6 +40,11 @@ impl CellAccess for Recording {
         self.note(format!("run {}", argv.join(" ")));
         self.inner.run(argv).await
     }
+
+    async fn run_root(&self, argv: &[&str]) -> eidolon_facet::Result<RunOutput> {
+        self.note(format!("run_root {}", argv.join(" ")));
+        self.inner.run_root(argv).await
+    }
 }
 
 #[tokio::test]

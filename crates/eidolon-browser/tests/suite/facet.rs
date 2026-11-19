@@ -107,7 +107,7 @@ async fn quiet_stops_the_units_and_waits_for_the_answer_not_for_a_timer() {
     let cell = RecordingCell::new(s.path("cell"), &[0, 0, 1]);
     facet(&[]).quiet(&cell).await.unwrap();
     let commands = cell.commands();
-    assert!(commands[0].starts_with("sudo systemctl stop eidolon-browser.service eidolon-view.service"), "{commands:?}");
+    assert!(commands[0].starts_with("root systemctl stop eidolon-browser.service eidolon-view.service"), "{commands:?}");
     assert_eq!(commands.iter().filter(|c| *c == "pgrep -u eidolon").count(), 3);
 }
 
@@ -134,7 +134,7 @@ async fn resume_starts_the_automation_browser() {
     let s = Scratch::new();
     let cell = RecordingCell::new(s.path("cell"), &[]);
     facet(&[]).resume(&cell).await.unwrap();
-    assert_eq!(cell.commands(), ["sudo systemctl start eidolon-browser.service"]);
+    assert_eq!(cell.commands(), ["root systemctl start eidolon-browser.service"]);
 }
 
 fn fill_profile(root: &std::path::Path) {
@@ -188,14 +188,13 @@ async fn a_profile_is_sealed_without_its_caches_and_opened_with_its_cookies() {
 }
 
 /// What placing a non-empty profile runs in the cell, in order.
-const PLACE_ARGV: [&str; 7] = [
-    "sudo rm -rf -- /home/eidolon/profile.incoming",
-    "id -un",
-    "sudo install -d -o builder -m 0700 /home/eidolon/profile.incoming",
-    "sudo rm -rf -- /home/eidolon/profile",
-    "sudo mv -- /home/eidolon/profile.incoming /home/eidolon/profile",
-    "sudo chown -R eidolon:eidolon /home/eidolon/profile",
-    "sudo chmod -R u+rwX,go-rwx /home/eidolon/profile",
+const PLACE_ARGV: [&str; 6] = [
+    "root rm -rf -- /home/eidolon/profile.incoming",
+    "root install -d -m 0700 /home/eidolon/profile.incoming",
+    "root rm -rf -- /home/eidolon/profile",
+    "root mv -- /home/eidolon/profile.incoming /home/eidolon/profile",
+    "root chown -R eidolon:eidolon /home/eidolon/profile",
+    "root chmod -R u+rwX,go-rwx /home/eidolon/profile",
 ];
 
 #[tokio::test]
@@ -238,8 +237,8 @@ async fn a_leftover_incoming_folder_is_removed_before_anything_is_made() {
     facet(&[]).place(&cell, &s.path("staged")).await.unwrap();
     assert!(!s.path("cell/home/eidolon/profile/half-copied").exists());
     let commands = cell.commands();
-    assert_eq!(commands[0], "sudo rm -rf -- /home/eidolon/profile.incoming");
-    assert!(commands[2].starts_with("sudo install -d"));
+    assert_eq!(commands[0], "root rm -rf -- /home/eidolon/profile.incoming");
+    assert!(commands[1].starts_with("root install -d"));
 }
 
 #[tokio::test]
@@ -249,7 +248,7 @@ async fn a_failed_swap_stops_before_the_old_profile_is_touched() {
     let cell = RecordingCell::new(s.path("cell"), &[]).failing("install");
     fill_profile(&s.path("staged"));
     assert!(facet(&[]).place(&cell, &s.path("staged")).await.is_err());
-    assert!(!cell.commands().iter().any(|c| c == "sudo rm -rf -- /home/eidolon/profile"));
+    assert!(!cell.commands().iter().any(|c| c == "root rm -rf -- /home/eidolon/profile"));
 }
 
 #[tokio::test]

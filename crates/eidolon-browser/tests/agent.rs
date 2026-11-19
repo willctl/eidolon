@@ -149,13 +149,17 @@ where
 
 async fn site(lima: &Lima, name: &CellName) -> Res {
     let server = SERVER.replace("%LEN%", &DOWNLOAD_LEN.to_string());
-    let opts = ExecOpts { stdin: Some(server.into_bytes()), ..ExecOpts::default() };
-    let made = lima.exec(name, &strings(&["sudo", "install", "-d", "-m", "0755", "/opt/testpage"]), ExecOpts::default()).await?;
+    let opts = ExecOpts { stdin: Some(server.into_bytes()), root: true, ..ExecOpts::default() };
+    let made = lima.exec(name, &strings(&["install", "-d", "-m", "0755", "/opt/testpage"]), ExecOpts { root: true, ..ExecOpts::default() }).await?;
     assert!(made.success(), "{}", made.stderr_lossy());
-    let wrote = lima.exec(name, &strings(&["sudo", "tee", "/opt/testpage/server.py"]), opts).await?;
+    let wrote = lima.exec(name, &strings(&["tee", "/opt/testpage/server.py"]), opts).await?;
     assert!(wrote.success(), "{}", wrote.stderr_lossy());
     let serve = lima
-        .exec(name, &strings(&["sudo", "systemd-run", "--unit=eidolon-test-page", "--working-directory=/opt/testpage", "python3", "/opt/testpage/server.py"]), ExecOpts::default())
+        .exec(
+            name,
+            &strings(&["systemd-run", "--unit=eidolon-test-page", "--working-directory=/opt/testpage", "python3", "/opt/testpage/server.py"]),
+            ExecOpts { root: true, ..ExecOpts::default() },
+        )
         .await?;
     assert!(serve.success(), "{}", serve.stderr_lossy());
     Ok(())

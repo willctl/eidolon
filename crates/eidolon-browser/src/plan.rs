@@ -1,8 +1,10 @@
 //! Setting up the guest, as data.
 //!
 //! A [`Plan`] is a list of [`Step`]s. Each step is an argument list run in
-//! the cell through `Driver::exec`, never a shell string. A file the guest
-//! needs is written by sending its bytes as stdin to `sudo tee`. Because the
+//! the cell through `Driver::exec`, never a shell string. A step that changes
+//! the system sets `root`, and the driver runs it as root (the command has no
+//! `sudo` in front); the rest run as the cell's unprivileged user. A file the
+//! guest needs is written by sending its bytes as stdin to `tee`. Because the
 //! plan is data, a golden file pins every command it will run.
 
 use crate::error::{BrowserError, Result};
@@ -25,8 +27,10 @@ const STEP_DEADLINE: Duration = Duration::from_secs(20 * 60);
 pub struct Step {
     /// What the step is for, in a few words.
     pub why: String,
-    /// The program and its arguments.
+    /// The program and its arguments, with no `sudo` in front.
     pub argv: Vec<String>,
+    /// Run as root, through the driver's root option.
+    pub root: bool,
     /// Text sent to the command's stdin (a file's contents, or a secret).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stdin: Option<String>,
@@ -45,6 +49,7 @@ impl fmt::Debug for Step {
         f.debug_struct("Step")
             .field("why", &self.why)
             .field("argv", &self.argv)
+            .field("root", &self.root)
             .field("stdin_bytes", &self.stdin.as_ref().map(String::len))
             .field("skip_if", &self.skip_if)
             .finish_non_exhaustive()
@@ -57,15 +62,13 @@ fn strings(parts: &[&str]) -> Vec<String> {
 
 impl Step {
     /// A command run as root.
-    fn sudo(why: &str, argv: &[&str]) -> Step {
-        let mut full = vec!["sudo"];
-        full.extend_from_slice(argv);
-        Step { why: why.to_owned(), argv: strings(&full), stdin: None, skip_if: None, expect_fingerprint: None }
+    fn root(why: &str, argv: &[&str]) -> Step {
+        Step { why: why.to_owned(), argv: strings(argv), root: true, stdin: None, skip_if: None, expect_fingerprint: None }
     }
 
-    /// Writes `text` to `path` as root, with `sudo tee`.
+    /// Writes `text` to `path` as root, with `tee`.
     fn write(why: &str, path: &str, text: &str) -> Step {
-        Step { stdin: Some(text.to_owned()), ..Step::sudo(why, &["tee", path]) }
+        Step { stdin: Some(text.to_owned()), ..Step::root(why, &["tee", path]) }
     }
 
     fn skip_if(mut self, guard: &[&str]) -> Step {
@@ -100,7 +103,7 @@ async fn run_step(step: &Step, driver: &dyn Driver, cell: &CellName) -> Result<(
             return Ok(());
         }
     }
-    let opts = ExecOpts { stdin: step.stdin.as_ref().map(|s| s.as_bytes().to_vec()), deadline: Some(STEP_DEADLINE), ..ExecOpts::default() };
+    let opts = ExecOpts { stdin: step.stdin.as_ref().map(|s| s.as_bytes().to_vec()), deadline: Some(STEP_DEADLINE), root: step.root, ..ExecOpts::default() };
     let out = driver.exec(cell, &step.argv, opts).await?;
     if !out.success() {
         // The step's stdin may be a secret, so only stderr is quoted.
@@ -138,7 +141,7 @@ pub fn provision_plan(ports: Ports) -> Plan {
     let apt = |why: &str, rest: &[&str]| {
         let mut argv = vec!["env", "DEBIAN_FRONTEND=noninteractive", "apt-get"];
         argv.extend_from_slice(rest);
-        Step::sudo(why, &argv)
+        Step::root(why, &argv)
     };
     let mut steps = vec![
         apt("refresh the package lists", &["update"]),
@@ -146,11 +149,12 @@ pub fn provision_plan(ports: Ports) -> Plan {
             "install the tools the browser and its window need",
             &["install", "-y", "--no-install-recommends", "ca-certificates", "curl", "gnupg", "socat", "xvfb", "x11vnc", "fonts-dejavu-core"],
         ),
-        Step::sudo("make the keyring folder", &["install", "-d", "-m", "0755", "/etc/apt/keyrings"]),
-        Step::sudo("fetch Mozilla's signing key", &["curl", "-fsSL", "--proto", "=https", "-o", KEY_PATH, "https://packages.mozilla.org/apt/repo-signing-key.gpg"]),
+        Step::root("make the keyring folder", &["install", "-d", "-m", "0755", "/etc/apt/keyrings"]),
+        Step::root("fetch Mozilla's signing key", &["curl", "-fsSL", "--proto", "=https", "-o", KEY_PATH, "https://packages.mozilla.org/apt/repo-signing-key.gpg"]),
         Step {
             why: "check the signing key's fingerprint".to_owned(),
             argv: strings(&["gpg", "--show-keys", "--with-colons", "--fingerprint", KEY_PATH]),
+            root: false,
             stdin: None,
             skip_if: None,
             expect_fingerprint: Some(MOZILLA_KEY_FINGERPRINT.to_owned()),
@@ -163,31 +167,34 @@ pub fn provision_plan(ports: Ports) -> Plan {
         Step::write("prefer Mozilla's Firefox package", "/etc/apt/preferences.d/mozilla", "Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n"),
         apt("refresh the package lists with Mozilla's repository", &["update"]),
         apt("install Firefox", &["install", "-y", "--no-install-recommends", "firefox"]),
-        Step::sudo("make the browser's user", &["useradd", "--create-home", "--shell", "/usr/sbin/nologin", units::USER]).skip_if(&["id", "-u", units::USER]),
+        Step::root("make the browser's user", &["useradd", "--create-home", "--shell", "/usr/sbin/nologin", units::USER]).skip_if(&["id", "-u", units::USER]),
         // The host's copy-out runs as the cell's own user, which needs to
         // walk into the home folder.
-        Step::sudo("let the home folder be entered", &["chmod", "0755", "/home/eidolon"]),
-        Step::sudo("make the profile folder", &["install", "-d", "-o", units::USER, "-g", units::USER, "-m", "0700", units::PROFILE_PATH]),
-        Step::sudo("make the files folders", &["install", "-d", "-o", units::USER, "-g", units::USER, "-m", "0755", "/home/eidolon/files", units::DOWNLOADS_PATH]),
+        Step::root("let the home folder be entered", &["chmod", "0755", "/home/eidolon"]),
+        Step::root("make the profile folder", &["install", "-d", "-o", units::USER, "-g", units::USER, "-m", "0700", units::PROFILE_PATH]),
+        Step::root("make the files folders", &["install", "-d", "-o", units::USER, "-g", units::USER, "-m", "0755", "/home/eidolon/files", units::DOWNLOADS_PATH]),
         // Uploads are copied in as the cell's login user, a different user
         // from the browser's, so the folder takes files from anyone in the
         // cell (sticky, so nobody removes another's file). The browser only
         // reads from it. The cell holds no other users.
-        Step::sudo("make the uploads folder", &["install", "-d", "-o", units::USER, "-g", units::USER, "-m", "1777", units::UPLOADS_PATH]),
-        Step { stdin: Some(units::USER_JS.to_owned()), ..Step::sudo("write the profile's preferences", &["-u", units::USER, "tee", &format!("{}/user.js", units::PROFILE_PATH)]) },
+        Step::root("make the uploads folder", &["install", "-d", "-o", units::USER, "-g", units::USER, "-m", "1777", units::UPLOADS_PATH]),
+        Step {
+            stdin: Some(units::USER_JS.to_owned()),
+            ..Step::root("write the profile's preferences", &["runuser", "-u", units::USER, "--", "tee", &format!("{}/user.js", units::PROFILE_PATH)])
+        },
     ];
     for (name, text) in units::units(ports) {
         steps.push(Step::write("install a unit", &format!("/etc/systemd/system/{name}"), &text));
     }
-    steps.push(Step::sudo("load the units", &["systemctl", "daemon-reload"]));
-    steps.push(Step::sudo("start the browser at boot", &["systemctl", "enable", units::BROWSER_UNIT]));
+    steps.push(Step::root("load the units", &["systemctl", "daemon-reload"]));
+    steps.push(Step::root("start the browser at boot", &["systemctl", "enable", units::BROWSER_UNIT]));
     Plan { steps }
 }
 
 /// Starts the automation browser (and so stops the sign-in window, which
 /// conflicts with it).
 pub fn start_browser_plan() -> Plan {
-    Plan { steps: vec![Step::sudo("start the browser", &["systemctl", "start", units::BROWSER_UNIT])] }
+    Plan { steps: vec![Step::root("start the browser", &["systemctl", "start", units::BROWSER_UNIT])] }
 }
 
 /// Starts the sign-in window, which stops the automation browser. `secret`
@@ -197,19 +204,19 @@ pub fn start_view_plan(secret: &str) -> Plan {
     // `dd` and not `tee`: tee would print the secret back on stdout.
     let write = Step {
         stdin: Some(secret.to_owned()),
-        ..Step::sudo("give the window its password", &["-u", units::USER, "dd", &format!("of={}", units::VNC_PASSWORD_PATH), "status=none"])
+        ..Step::root("give the window its password", &["runuser", "-u", units::USER, "--", "dd", &format!("of={}", units::VNC_PASSWORD_PATH), "status=none"])
     };
     Plan {
         steps: vec![
-            Step::sudo("make the window's folder", &["install", "-d", "-o", units::USER, "-g", units::USER, "-m", "0700", units::RUN_PATH]),
+            Step::root("make the window's folder", &["install", "-d", "-o", units::USER, "-g", units::USER, "-m", "0700", units::RUN_PATH]),
             write,
-            Step::sudo("keep the password private", &["chmod", "0600", units::VNC_PASSWORD_PATH]),
-            Step::sudo("start the sign-in window", &["systemctl", "start", units::VIEW_UNIT]),
+            Step::root("keep the password private", &["chmod", "0600", units::VNC_PASSWORD_PATH]),
+            Step::root("start the sign-in window", &["systemctl", "start", units::VIEW_UNIT]),
         ],
     }
 }
 
-/// The command that stops every unit of the browser.
+/// The command that stops every unit of the browser. It needs root.
 pub fn stop_argv() -> Vec<String> {
-    strings(&["sudo", "systemctl", "stop", units::BROWSER_UNIT, units::VIEW_UNIT, units::VNC_UNIT, units::XVFB_UNIT])
+    strings(&["systemctl", "stop", units::BROWSER_UNIT, units::VIEW_UNIT, units::VNC_UNIT, units::XVFB_UNIT])
 }

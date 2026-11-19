@@ -19,6 +19,7 @@ pub fn cell() -> CellName {
 pub struct Exec {
     pub argv: Vec<String>,
     pub stdin: Option<Vec<u8>>,
+    pub root: bool,
 }
 
 /// What the next call of `stream` does.
@@ -103,7 +104,7 @@ impl Driver for FakeDriver {
         Err(unsupported("start"))
     }
     async fn exec(&self, _name: &CellName, argv: &[String], opts: ExecOpts) -> Result<Output, DriverError> {
-        self.execs.lock().unwrap().push(Exec { argv: argv.to_vec(), stdin: opts.stdin });
+        self.execs.lock().unwrap().push(Exec { argv: argv.to_vec(), stdin: opts.stdin, root: opts.root });
         Ok((self.answer)(argv))
     }
     async fn stream(&self, _name: &CellName, argv: &[String]) -> Result<Duplex, DriverError> {
@@ -146,7 +147,7 @@ impl RecordingCell {
         RecordingCell { inner: LocalCell::new(root), runs: Mutex::default(), pgrep: Mutex::new(pgrep.iter().copied().collect()), fail_on: None }
     }
 
-    /// Makes every command whose program is `program` (after `sudo`) fail.
+    /// Makes every command (root or not) that has `program` among its words fail.
     pub fn failing(mut self, program: &'static str) -> RecordingCell {
         self.fail_on = Some(program);
         self
@@ -165,12 +166,12 @@ impl RecordingCell {
             return;
         }
         match argv {
-            ["sudo", "rm", "-rf", "--", path] => {
+            ["rm", "-rf", "--", path] => {
                 if let Ok(host) = self.inner.host_path(path) {
                     let _ = std::fs::remove_dir_all(host);
                 }
             }
-            ["sudo", "mv", "--", from, to] => {
+            ["mv", "--", from, to] => {
                 if let (Ok(from), Ok(to)) = (self.inner.host_path(from), self.inner.host_path(to)) {
                     let _ = std::fs::rename(from, to);
                 }
@@ -189,8 +190,24 @@ impl CellAccess for RecordingCell {
         self.inner.copy_in(host_dir, guest_path).await
     }
     async fn run(&self, argv: &[&str]) -> eidolon_facet::Result<RunOutput> {
-        self.act(argv);
-        self.runs.lock().unwrap().push(argv.iter().map(|a| (*a).to_owned()).collect());
+        Ok(self.record("", argv))
+    }
+    async fn run_root(&self, argv: &[&str]) -> eidolon_facet::Result<RunOutput> {
+        Ok(self.record("root", argv))
+    }
+}
+
+impl RecordingCell {
+    /// Notes a command, with `root` first when it ran as root, and answers it.
+    fn record(&self, who: &str, argv: &[&str]) -> RunOutput {
+        if who == "root" {
+            self.act(argv);
+        }
+        let mut noted: Vec<String> = argv.iter().map(|a| (*a).to_owned()).collect();
+        if !who.is_empty() {
+            noted.insert(0, who.to_owned());
+        }
+        self.runs.lock().unwrap().push(noted);
         let status = if argv.first() == Some(&"pgrep") {
             // An empty script means nothing is left running.
             self.pgrep.lock().unwrap().pop_front().unwrap_or(1)
@@ -199,6 +216,6 @@ impl CellAccess for RecordingCell {
         };
         // The cell's login user, for `id -un`.
         let stdout = if argv == ["id", "-un"] { "builder\n".to_owned() } else { String::new() };
-        Ok(RunOutput { status, stdout, stderr: if status == 0 { String::new() } else { "no".into() } })
+        RunOutput { status, stdout, stderr: if status == 0 { String::new() } else { "no".into() } }
     }
 }

@@ -66,8 +66,10 @@ fn argv(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| (*s).to_owned()).collect()
 }
 
+/// Runs a script in the cell as root: the cell's own user may not write
+/// where Lima's copy does, and a test reads everything.
 async fn sh(lima: &Lima, cell: &CellName, script: &str) -> String {
-    let out = lima.exec(cell, &argv(&["sh", "-c", script]), ExecOpts::default()).await.unwrap();
+    let out = lima.exec(cell, &argv(&["sh", "-c", script]), ExecOpts { root: true, ..ExecOpts::default() }).await.unwrap();
     assert!(out.success(), "{script}: {}", out.stderr_lossy());
     out.stdout_lossy()
 }
@@ -131,7 +133,7 @@ async fn an_eidolon_moves_between_two_real_cells_and_the_refusals_hold() {
     let seed = sb.root.join("seed/notes");
     write_tree(&seed);
     let t = Instant::now();
-    sh(&lima, &cell_a, "rm -rf /tmp/eidolon-seed && mkdir -p /tmp/eidolon-seed /tmp/eidolon-live").await;
+    sh(&lima, &cell_a, "rm -rf /tmp/eidolon-seed && mkdir -p /tmp/eidolon-seed /tmp/eidolon-live && chown adytum /tmp/eidolon-seed").await;
     lima.copy_in(&cell_a, &seed, "/tmp/eidolon-seed").await.unwrap();
     sh(&lima, &cell_a, &format!("rm -rf {FOLDER} && mkdir -p {FOLDER} && cp -a /tmp/eidolon-seed/. {FOLDER}/")).await;
     steps.time("write the folder in A", t, ());

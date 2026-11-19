@@ -68,8 +68,8 @@ async fn scenario(lima: &Lima, name: &CellName) -> Res {
     let serve = lima
         .exec(
             name,
-            &strings(&["sudo", "systemd-run", "--unit=eidolon-test-site", "--working-directory=/tmp/site", "python3", "-m", "http.server", "8000", "--bind", "127.0.0.1"]),
-            ExecOpts::default(),
+            &strings(&["systemd-run", "--unit=eidolon-test-site", "--working-directory=/tmp/site", "python3", "-m", "http.server", "8000", "--bind", "127.0.0.1"]),
+            ExecOpts { root: true, ..ExecOpts::default() },
         )
         .await?;
     assert!(serve.success(), "{}", serve.stderr_lossy());

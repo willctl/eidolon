@@ -67,7 +67,7 @@ async fn an_upload_inside_the_files_folder_is_copied_in_and_chosen_by_its_guest_
     let guest = "/home/eidolon/files/uploads/avatar.png";
     assert_eq!(
         e.driver.calls(),
-        vec![Call::CopyIn { host: e.files.join("pics/avatar.png"), guest: guest.to_owned() }, Call::Exec(vec!["chmod".to_owned(), "0644".to_owned(), guest.to_owned()])]
+        vec![Call::CopyIn { host: e.files.join("pics/avatar.png"), guest: guest.to_owned() }, Call::ExecRoot(vec!["chmod".to_owned(), "0644".to_owned(), guest.to_owned()])]
     );
     assert_eq!(std::fs::read_to_string(e.driver.guest(guest)).unwrap(), "png bytes");
     assert_eq!(e.page.files("#upload"), vec![guest.to_owned()]);
@@ -94,7 +94,7 @@ async fn a_private_host_file_is_uploaded_and_made_readable() {
     let uid = uid_of(&e.tools.take_snapshot().await.unwrap(), "Avatar");
     e.tools.upload_file_by_uid(&uid, "private.txt").await.unwrap();
     let guest = "/home/eidolon/files/uploads/private.txt";
-    assert!(e.driver.calls().contains(&Call::Exec(vec!["chmod".to_owned(), "0644".to_owned(), guest.to_owned()])));
+    assert!(e.driver.calls().contains(&Call::ExecRoot(vec!["chmod".to_owned(), "0644".to_owned(), guest.to_owned()])));
     assert_eq!(e.page.files("#upload"), vec![guest.to_owned()]);
 }
 

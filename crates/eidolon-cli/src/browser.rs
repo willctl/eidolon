@@ -94,7 +94,8 @@ pub async fn provision_if_needed(cells: &dyn Cells, cell: &str) -> Result<bool> 
 pub async fn stop(access: &dyn CellAccess) -> Result<()> {
     let stop = stop_argv();
     let stop: Vec<&str> = stop.iter().map(String::as_str).collect();
-    access.run(&stop).await?;
+    // Stopping a unit takes root; a plain run would fail and be ignored.
+    access.run_root(&stop).await?;
     Ok(())
 }
 
@@ -103,4 +104,49 @@ pub async fn start(cells: &dyn Cells, cell: &str) -> Result<()> {
     let (driver, name) = cells.driver(cell).await?;
     start_browser_plan().run(driver.as_ref(), &name).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use eidolon_facet::{FacetError, RunOutput};
+    use std::path::Path;
+    use std::sync::Mutex;
+
+    /// Notes whether a command ran as root.
+    #[derive(Default)]
+    struct Who(Mutex<Vec<(bool, String)>>);
+
+    fn done() -> RunOutput {
+        RunOutput { status: 0, stdout: String::new(), stderr: String::new() }
+    }
+
+    #[async_trait]
+    impl CellAccess for Who {
+        async fn copy_out(&self, _: &str, _: &Path) -> std::result::Result<(), FacetError> {
+            Ok(())
+        }
+        async fn copy_in(&self, _: &Path, _: &str) -> std::result::Result<(), FacetError> {
+            Ok(())
+        }
+        async fn run(&self, argv: &[&str]) -> std::result::Result<RunOutput, FacetError> {
+            self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((false, argv.join(" ")));
+            Ok(done())
+        }
+        async fn run_root(&self, argv: &[&str]) -> std::result::Result<RunOutput, FacetError> {
+            self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((true, argv.join(" ")));
+            Ok(done())
+        }
+    }
+
+    #[tokio::test]
+    async fn stopping_the_browser_runs_as_root_with_no_sudo_in_front() {
+        let who = Who::default();
+        stop(&who).await.unwrap();
+        let seen = who.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].0, "it must ask for root");
+        assert!(seen[0].1.starts_with("systemctl stop "), "{}", seen[0].1);
+    }
 }

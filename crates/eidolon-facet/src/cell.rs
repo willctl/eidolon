@@ -20,8 +20,12 @@ pub trait CellAccess: Send + Sync {
     /// Copies the contents of the host folder `host_dir` into the cell
     /// folder `guest_path`.
     async fn copy_in(&self, host_dir: &Path, guest_path: &str) -> Result<()>;
-    /// Runs a command in the cell.
+    /// Runs a command in the cell as the cell's own unprivileged user.
     async fn run(&self, argv: &[&str]) -> Result<RunOutput>;
+    /// Runs a command in the cell as root, for what changes system files,
+    /// services or another user's files. `argv` is the bare command: no
+    /// `sudo` in front.
+    async fn run_root(&self, argv: &[&str]) -> Result<RunOutput>;
 }
 
 /// A cell that is a host folder: the guest root. Copies are plain recursive
@@ -56,6 +60,10 @@ impl CellAccess for LocalCell {
     }
 
     async fn run(&self, _argv: &[&str]) -> Result<RunOutput> {
+        Ok(RunOutput { status: 0, stdout: String::new(), stderr: String::new() })
+    }
+
+    async fn run_root(&self, _argv: &[&str]) -> Result<RunOutput> {
         Ok(RunOutput { status: 0, stdout: String::new(), stderr: String::new() })
     }
 }

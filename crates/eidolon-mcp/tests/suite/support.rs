@@ -43,9 +43,17 @@ impl Drop for Temp {
 /// What the fake driver was asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Call {
-    CopyIn { host: PathBuf, guest: String },
-    CopyOut { guest: String, host: PathBuf },
+    CopyIn {
+        host: PathBuf,
+        guest: String,
+    },
+    CopyOut {
+        guest: String,
+        host: PathBuf,
+    },
     Exec(Vec<String>),
+    /// A command run as root.
+    ExecRoot(Vec<String>),
 }
 
 /// A driver whose cell is a folder on the host: guest paths map under `root`.
@@ -70,7 +78,7 @@ impl FakeDriver {
     }
 
     pub fn copies(&self) -> usize {
-        self.calls().iter().filter(|c| !matches!(c, Call::Exec(_))).count()
+        self.calls().iter().filter(|c| matches!(c, Call::CopyIn { .. } | Call::CopyOut { .. })).count()
     }
 }
 
@@ -90,8 +98,8 @@ impl Driver for FakeDriver {
     async fn start(&self, _name: &CellName) -> Result<(), DriverError> {
         Err(unsupported("start"))
     }
-    async fn exec(&self, _name: &CellName, argv: &[String], _opts: ExecOpts) -> Result<Output, DriverError> {
-        self.calls.lock().unwrap().push(Call::Exec(argv.to_vec()));
+    async fn exec(&self, _name: &CellName, argv: &[String], opts: ExecOpts) -> Result<Output, DriverError> {
+        self.calls.lock().unwrap().push(if opts.root { Call::ExecRoot(argv.to_vec()) } else { Call::Exec(argv.to_vec()) });
         if argv.first().map(String::as_str) == Some("chmod") {
             if self.fail_chmod.load(Ordering::Relaxed) {
                 return Ok(Output { status: Some(1), stderr: b"Operation not permitted".to_vec(), ..Output::default() });

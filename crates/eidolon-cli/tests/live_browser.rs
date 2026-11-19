@@ -145,8 +145,10 @@ fn argv(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| (*s).to_owned()).collect()
 }
 
+/// Runs a script in the cell as root: the cell's own user may not write
+/// where Lima's copy does, and a test reads everything.
 async fn sh(lima: &Lima, cell: &CellName, script: &str) -> String {
-    let out = lima.exec(cell, &argv(&["sh", "-c", script]), ExecOpts::default()).await.unwrap();
+    let out = lima.exec(cell, &argv(&["sh", "-c", script]), ExecOpts { root: true, ..ExecOpts::default() }).await.unwrap();
     assert!(out.success(), "{script}: {}", out.stderr_lossy());
     out.stdout_lossy()
 }
@@ -174,12 +176,12 @@ async fn clone_cell(ledger: &Ledger, lima: &Lima, from: &CellName, to: &str) {
 async fn serve_page(lima: &Lima, cell: &CellName) {
     let run = |parts: &[&str]| {
         let parts = argv(parts);
-        async move { lima.exec(cell, &parts, ExecOpts::default()).await.unwrap() }
+        async move { lima.exec(cell, &parts, ExecOpts { root: true, ..ExecOpts::default() }).await.unwrap() }
     };
     // Best effort: the unit usually does not exist, and that is fine.
-    run(&["sudo", "systemctl", "stop", "eidolon-testpage.service"]).await;
-    run(&["sudo", "systemctl", "reset-failed", "eidolon-testpage.service"]).await;
-    let started = run(&["sudo", "systemd-run", "--unit=eidolon-testpage", "--collect", "--property=Restart=on-failure", "python3", "/opt/testpage/server.py"]).await;
+    run(&["systemctl", "stop", "eidolon-testpage.service"]).await;
+    run(&["systemctl", "reset-failed", "eidolon-testpage.service"]).await;
+    let started = run(&["systemd-run", "--unit=eidolon-testpage", "--collect", "--property=Restart=on-failure", "python3", "/opt/testpage/server.py"]).await;
     assert!(started.success(), "systemd-run did not start the test page in {cell}: {}", started.stderr_lossy());
     // The server is a moment behind its unit: poll until the unit is active
     // and the page answers. Each poll is bounded.
@@ -200,7 +202,7 @@ async fn serve_page(lima: &Lima, cell: &CellName) {
         return;
     }
     let status = run(&["systemctl", "status", "eidolon-testpage.service", "--no-pager"]).await;
-    let journal = run(&["sudo", "journalctl", "-u", "eidolon-testpage.service", "--no-pager", "-n", "50"]).await;
+    let journal = run(&["journalctl", "-u", "eidolon-testpage.service", "--no-pager", "-n", "50"]).await;
     let script = run(&["ls", "-l", "/opt/testpage/server.py"]).await;
     let curl = run(&["curl", "-sv", "--max-time", "3", "-o", "/dev/null", &target]).await;
     assert!(
@@ -330,10 +332,12 @@ async fn a_signed_in_browser_and_a_folder_move_between_two_real_cells_together()
     provision_plan(Ports::default()).run(&lima, &base).await.unwrap();
     steps.time("set the base cell up for the browser (once)", t, ());
     // The test page's server lives in the base, so both clones have it.
-    let page = ExecOpts { stdin: Some(SERVER.as_bytes().to_vec()), ..ExecOpts::default() };
-    sh(&lima, &base, "sudo install -d -m 0755 /opt/testpage").await;
-    let wrote = lima.exec(&base, &argv(&["sudo", "tee", "/opt/testpage/server.py"]), page).await.unwrap();
+    let page = ExecOpts { stdin: Some(SERVER.as_bytes().to_vec()), root: true, ..ExecOpts::default() };
+    sh(&lima, &base, "install -d -m 0755 /opt/testpage").await;
+    let wrote = lima.exec(&base, &argv(&["tee", "/opt/testpage/server.py"]), page).await.unwrap();
     assert!(wrote.success());
+    // Flushed before the stop, so both clones see the whole file.
+    sh(&lima, &base, "sync").await;
     let t = Instant::now();
     lima.stop(&base).await.unwrap();
     steps.time("stop the base cell", t, ());
@@ -389,7 +393,7 @@ async fn a_signed_in_browser_and_a_folder_move_between_two_real_cells_together()
     let seed = sb.root.join("seed/notes");
     write_tree(&seed);
     let t = Instant::now();
-    sh(&lima, &a, "rm -rf /tmp/eidolon-seed && mkdir -p /tmp/eidolon-seed /tmp/eidolon-live").await;
+    sh(&lima, &a, "rm -rf /tmp/eidolon-seed && mkdir -p /tmp/eidolon-seed /tmp/eidolon-live && chown adytum /tmp/eidolon-seed").await;
     lima.copy_in(&a, &seed, "/tmp/eidolon-seed").await.unwrap();
     sh(&lima, &a, &format!("rm -rf {FOLDER} && mkdir -p {FOLDER} && cp -a /tmp/eidolon-seed/. {FOLDER}/")).await;
     steps.time("write the folder in A", t, ());

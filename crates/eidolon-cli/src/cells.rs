@@ -180,8 +180,8 @@ impl Cells for AdytumCells {
         for path in guest_paths {
             clearable(path)?;
             // Root, because a browser's profile belongs to the cell's browser user.
-            let argv: Vec<String> = ["sudo", "rm", "-rf", "--", path].map(str::to_owned).to_vec();
-            let out = self.driver.exec(&name, &argv, ExecOpts::default()).await?;
+            let argv: Vec<String> = ["rm", "-rf", "--", path].map(str::to_owned).to_vec();
+            let out = self.driver.exec(&name, &argv, ExecOpts { root: true, ..ExecOpts::default() }).await?;
             if !out.success() {
                 return Err(CliError::failed("clear", format!("Could not clear {path} in {name}: {}", out.stderr_lossy().trim()), "Clear it by hand and run the command again."));
             }
@@ -212,9 +212,9 @@ fn cell_err(e: impl std::fmt::Display) -> FacetError {
 }
 
 impl DriverAccess {
-    async fn exec(&self, argv: &[&str]) -> std::result::Result<RunOutput, FacetError> {
+    async fn exec(&self, argv: &[&str], root: bool) -> std::result::Result<RunOutput, FacetError> {
         let argv: Vec<String> = argv.iter().map(|a| (*a).to_owned()).collect();
-        let out = self.driver.exec(&self.name, &argv, ExecOpts::default()).await.map_err(cell_err)?;
+        let out = self.driver.exec(&self.name, &argv, ExecOpts { root, ..ExecOpts::default() }).await.map_err(cell_err)?;
         Ok(RunOutput { status: out.status.unwrap_or(-1), stdout: out.stdout_lossy(), stderr: out.stderr_lossy() })
     }
 }
@@ -226,15 +226,34 @@ impl CellAccess for DriverAccess {
         self.driver.copy_out(&self.name, guest_path, host_dir).await.map_err(cell_err)
     }
 
+    /// The copy runs as Lima's admin user, who can neither write into a
+    /// folder the cell's user owns nor set its times. So the folder is made
+    /// and handed to the admin user for the copy, then handed to the cell's
+    /// user, whose programs are what use the files.
     async fn copy_in(&self, host_dir: &Path, guest_path: &str) -> std::result::Result<(), FacetError> {
-        let made = self.exec(&["mkdir", "-p", guest_path]).await?;
-        if made.status != 0 {
-            return Err(FacetError::Cell(format!("could not make {guest_path} in {}: {}", self.name, made.stderr.trim())));
+        let admin = adytum_lima::ADMIN_USER;
+        let cell_user = format!("{0}:{0}", adytum_lima::EXEC_USER);
+        for (what, argv) in [("make", vec!["mkdir", "-p", guest_path]), ("hand over", vec!["chown", "-R", admin, guest_path])] {
+            let done = self.exec(&argv, true).await?;
+            if done.status != 0 {
+                return Err(FacetError::Cell(format!("could not {what} {guest_path} in {}: {}", self.name, done.stderr.trim())));
+            }
         }
-        self.driver.copy_in(&self.name, host_dir, guest_path).await.map_err(cell_err)
+        let copied = self.driver.copy_in(&self.name, host_dir, guest_path).await.map_err(cell_err);
+        // Hand the folder on even when the copy failed, so it is not left to the admin user.
+        let given = self.exec(&["chown", "-R", &cell_user, guest_path], true).await?;
+        copied?;
+        if given.status != 0 {
+            return Err(FacetError::Cell(format!("could not give {guest_path} in {} to the cell's user: {}", self.name, given.stderr.trim())));
+        }
+        Ok(())
     }
 
     async fn run(&self, argv: &[&str]) -> std::result::Result<RunOutput, FacetError> {
-        self.exec(argv).await
+        self.exec(argv, false).await
+    }
+
+    async fn run_root(&self, argv: &[&str]) -> std::result::Result<RunOutput, FacetError> {
+        self.exec(argv, true).await
     }
 }

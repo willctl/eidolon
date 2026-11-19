@@ -51,8 +51,13 @@ fn run_failed(what: &str, out: &RunOutput) -> FacetError {
     FacetError::Cell(format!("{what} exited with status {}: {}", out.status, out.stderr.trim()))
 }
 
-async fn run_ok(cell: &dyn CellAccess, what: &str, argv: &[&str]) -> Result<()> {
-    let out = cell.run(argv).await?;
+/// Runs `argv` in the cell as root and fails on a bad status. `argv` has no
+/// `sudo` in front.
+async fn root_ok(cell: &dyn CellAccess, what: &str, argv: &[&str]) -> Result<()> {
+    check(what, cell.run_root(argv).await?)
+}
+
+fn check(what: &str, out: RunOutput) -> Result<()> {
     if out.status == 0 {
         Ok(())
     } else {
@@ -76,7 +81,7 @@ impl Facet for BrowserFacet {
     async fn quiet(&self, cell: &dyn CellAccess) -> Result<()> {
         let stop = stop_argv();
         let stop: Vec<&str> = stop.iter().map(String::as_str).collect();
-        run_ok(cell, "Stopping the browser", &stop).await?;
+        root_ok(cell, "Stopping the browser", &stop).await?;
         for attempt in 1..=QUIET_ATTEMPTS {
             let out = cell.run(&["pgrep", "-u", USER]).await?;
             match out.status {
@@ -94,7 +99,7 @@ impl Facet for BrowserFacet {
     }
 
     async fn resume(&self, cell: &dyn CellAccess) -> Result<()> {
-        run_ok(cell, "Starting the browser", &["sudo", "systemctl", "start", units::BROWSER_UNIT]).await
+        root_ok(cell, "Starting the browser", &["systemctl", "start", units::BROWSER_UNIT]).await
     }
 
     fn leave_out(&self) -> Vec<String> {
@@ -112,19 +117,19 @@ impl Facet for BrowserFacet {
     /// copy runs as the cell's own user.
     async fn take(&self, cell: &dyn CellAccess, staging: &Path) -> Result<()> {
         let path = self.spec.path.as_str();
-        run_ok(cell, "Opening the profile for copying", &["sudo", "chmod", "-R", "a+rX", path]).await?;
+        root_ok(cell, "Opening the profile for copying", &["chmod", "-R", "a+rX", path]).await?;
         let copied = cell.copy_out(path, staging).await;
-        let closed = run_ok(cell, "Closing the profile again", &["sudo", "chmod", "-R", "u+rwX,go-rwx", path]).await;
+        let closed = root_ok(cell, "Closing the profile again", &["chmod", "-R", "u+rwX,go-rwx", path]).await;
         copied.and(closed)
     }
 
     /// Replaces the cell's profile whole with the staged one. A browser that
     /// ran in the cell leaves files of its own (a database's journal beside
     /// the wrong database would corrupt it), and the profile folder is
-    /// private to `eidolon`, so the cell's login user could neither write
-    /// into it nor set its times. So the files are copied into a fresh
-    /// sibling folder owned by the login user, and only then swapped in:
-    /// a kill midway leaves the old profile or the new one, plus a stale
+    /// private to `eidolon`, so the cell's user could neither write into
+    /// it nor set its times. So the files are copied into a fresh sibling
+    /// folder (which the cell's copy hands to whoever writes it), and only
+    /// then swapped in: a kill midway leaves the old profile or the new one, plus a stale
     /// `.incoming` folder that the next place removes first. A staged
     /// profile with nothing in it (never sealed) places nothing, which
     /// keeps the preferences file provisioning wrote.
@@ -139,16 +144,12 @@ impl Facet for BrowserFacet {
             return Err(FacetError::Cell(format!("The profile folder {path:?} is too close to the cell's root to be replaced.")));
         }
         let incoming = format!("{path}.incoming");
-        run_ok(cell, "Removing a profile left half placed", &["sudo", "rm", "-rf", "--", &incoming]).await?;
-        let user = cell.run(&["id", "-un"]).await?;
-        if user.status != 0 {
-            return Err(run_failed("Asking who the cell's login user is", &user));
-        }
-        run_ok(cell, "Making the folder for the incoming profile", &["sudo", "install", "-d", "-o", user.stdout.trim(), "-m", "0700", &incoming]).await?;
+        root_ok(cell, "Removing a profile left half placed", &["rm", "-rf", "--", &incoming]).await?;
+        root_ok(cell, "Making the folder for the incoming profile", &["install", "-d", "-m", "0700", &incoming]).await?;
         cell.copy_in(staging, &incoming).await?;
-        run_ok(cell, "Removing the old profile", &["sudo", "rm", "-rf", "--", path]).await?;
-        run_ok(cell, "Moving the new profile into place", &["sudo", "mv", "--", &incoming, path]).await?;
-        run_ok(cell, "Giving the profile to its user", &["sudo", "chown", "-R", "eidolon:eidolon", path]).await?;
-        run_ok(cell, "Closing the profile", &["sudo", "chmod", "-R", "u+rwX,go-rwx", path]).await
+        root_ok(cell, "Removing the old profile", &["rm", "-rf", "--", path]).await?;
+        root_ok(cell, "Moving the new profile into place", &["mv", "--", &incoming, path]).await?;
+        root_ok(cell, "Giving the profile to its user", &["chown", "-R", "eidolon:eidolon", path]).await?;
+        root_ok(cell, "Closing the profile", &["chmod", "-R", "u+rwX,go-rwx", path]).await
     }
 }
