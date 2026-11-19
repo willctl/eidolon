@@ -15,7 +15,6 @@ publish = false
 [workspace.dependencies]
 eidolon-bidi = { path = "crates/eidolon-bidi" }
 eidolon-browser = { path = "crates/eidolon-browser" }
-eidolon-cli = { path = "crates/eidolon-cli" }
 eidolon-facet = { path = "crates/eidolon-facet" }
 eidolon-mcp = { path = "crates/eidolon-mcp" }
 eidolon-model = { path = "crates/eidolon-model" }
