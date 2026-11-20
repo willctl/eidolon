@@ -53,14 +53,12 @@ tower$ eidolon receive < offer > ack
 desk$  eidolon settle firefox --confirm ack
 ```
 
-Seal a folder inside a VM or a cell from its tar, and put it back the same way. `--from-tar -` reads a tar on standard input and keeps what the target's rules keep; `--tar` writes the checked entries as a tar on standard output:
+Seal a folder inside a VM or an Adytum cell from its tar, and put it back the same way. `--from-tar -` reads a tar on standard input and keeps what the target's rules keep; `--tar` writes the checked entries as a tar on standard output:
 
 ```text
 adytum exec adytum-web -- tar -C /home/cell/profile -c . | eidolon seal web --from-tar -
-eidolon open web --tar | limactl shell work-vm -- tar -x -C /home/cell/profile
+eidolon open web --tar | adytum exec adytum-web -- tar -x -C /home/cell/profile
 ```
-
-`adytum exec` does not pass its standard input to the cell, so into an Adytum cell the tar goes as a file: `eidolon open web --tar > web.tar`, then `adytum cp web.tar adytum-web:/home/cell/web.tar`. That file is not encrypted.
 
 Open a bundle with stock tools, on any machine that has a holder's key:
 
