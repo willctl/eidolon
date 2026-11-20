@@ -15,9 +15,9 @@ cargo install --locked --git https://github.com/willctl/eidolon eidolon-cli
 Each machine makes its key once and lists every machine, itself too, as a holder. Both lists must be the same.
 
 ```text
-desk$  eidolon key show
+desk$  eidolon key init
 ssh-ed25519 AAAAC3...desk
-tower$ eidolon key show
+tower$ eidolon key init
 ssh-ed25519 AAAAC3...tower
 
 desk$  eidolon holders add desk ssh-ed25519 AAAAC3...desk
@@ -41,7 +41,7 @@ desk$  eidolon send firefox --to tower --clear -- ssh tower eidolon receive
 tower$ eidolon open firefox
 ```
 
-`seal` refuses with `app_running` while Firefox has the profile open, and holds Firefox's own lock while it reads, so Firefox cannot start halfway through. `send` runs the command after `--` as an argument list, never through a shell, writes the offer to its standard input and reads the ack from its standard output. `--clear` removes desk's copy once tower has acked. After the move, `eidolon open firefox` on desk is refused with `not_the_holder`.
+`seal` refuses with `app_running` while Firefox has the profile open, and holds Firefox's own lock while it reads, so Firefox cannot start halfway through. It checks every entry as `open` would, and keeps the last good bundle until the new one has opened once. `send` runs the command after `--` as an argument list, never through a shell, writes the offer to its standard input and reads the ack from its standard output. `--clear` removes desk's copy once tower has acked. After the move, `eidolon open firefox` on desk is refused with `not_the_holder`.
 
 ## Recipes
 
@@ -107,19 +107,19 @@ Globs are relative to the folder; `*` stays within one folder and `**` crosses t
 
 | Command | What it does |
 | --- | --- |
-| `key show` | Prints this machine's public key, making the key the first time. |
+| `key init`, `key show` | Makes this machine's key; prints its public key, or says there is none yet. |
 | `holders add <name> <key>`, `holders ls` | Lists the machines that may hold a target. |
 | `target add <name> [--preset P \| --file F] [--path DIR]`, `target ls`, `target show <name>` | Adds a target (a path alone takes the whole folder), or sets its path on this machine. |
-| `seal <target> [--from DIR \| --from-tar -] [-r RECIPIENT]` | Captures the folder into a new bundle and signs the next seat. |
+| `seal <target> [--from DIR \| --from-tar -] [-r RECIPIENT] [--max-size 16G]` | Captures the folder into a new bundle and signs the next seat. |
 | `open <target> [--to DIR \| --tar] [--max-size 16G]` | Restores the newest bundle into a fresh folder and swaps it into place. |
 | `send <target> --to <holder> [--clear] (-- COMMAND \| --out FILE)` | Moves the seat to another holder. |
 | `receive [--max-size 16G]` | Reads an offer on standard input and writes the ack on standard output. |
 | `settle <target> (--confirm ACK \| --abandon) [--clear]` | Finishes a move that was cut off. |
 | `ls`, `verify <target>` | Shows every target and its holder; checks the seats and the bundle. |
 
-Every command takes `--json` and then prints one JSON object; a failure is `{"error": {"code", "message", "fix"}}`. The codes are stable, such as `app_running`, `not_the_holder`, `move_pending` or `unsafe_entry`. Exit 0 is done, 1 is a refusal or a failure, and 2 is a mistake in how the command was typed. With `open --tar` and `receive`, standard output carries data, so the summary goes to standard error.
+Every command takes `--json` and then prints one JSON object; a failure is `{"error": {"code", "message", "fix"}}`. The codes are stable, such as `app_running`, `not_the_holder`, `move_pending`, `unsafe_entry`, `no_key` or `busy`. Reading commands (`ls`, `key show`, `holders ls`, `target show`, `verify`) write nothing; on a machine with no key, `ls --json` prints `"key": null`. Each command that changes a target holds a lock on it, and a second one at the same time is refused with `busy`. Exit 0 is done, 1 is a refusal or a failure, and 2 is a mistake in how the command was typed. With `open --tar` and `receive`, standard output carries data, so the summary goes to standard error.
 
-The home is `~/.eidolon`, or `--home` / `EIDOLON_HOME`. The key lives in the system's key store (the macOS keychain, Windows Credential Manager, or the Secret Service on Linux) under `eidolon` / `machine-key`. On a machine without one, such as a server reached over ssh, pass `--key-file` or set `EIDOLON_KEY_FILE` to an OpenSSH key that only its owner can read; Eidolon makes it if it is missing and refuses it if others can read it.
+The home is `~/.eidolon`, or `--home` / `EIDOLON_HOME`. The key lives in the system's key store (the macOS keychain, Windows Credential Manager, or the Secret Service on Linux) under `eidolon` / `machine-key`. On a machine without one, such as a server reached over ssh, pass `--key-file` or set `EIDOLON_KEY_FILE` to an OpenSSH key that only its owner can read. `eidolon key init` makes it if it is missing, and every command refuses it if others can read it.
 
 ## Limits
 
