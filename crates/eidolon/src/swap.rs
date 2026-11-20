@@ -4,7 +4,7 @@
 //! (or the old one aside), and `recover` finishes or undoes it.
 
 use crate::error::{io_err, Code, Error, Result};
-use crate::files::remove_dir_if_present;
+use crate::files::{new_private_dir, remove_dir_if_present};
 use crate::lock::AppLock;
 use std::ffi::OsString;
 use std::fs;
@@ -49,13 +49,7 @@ pub(crate) fn replace<T>(dest: &Path, lock: Option<AppLock>, fill: impl FnOnce(&
     if let Some(parent) = dest.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent).map_err(io_err(format!("make {}", parent.display())))?;
     }
-    let mut builder = fs::DirBuilder::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder.create(&fresh).map_err(io_err(format!("make {}", fresh.display())))?;
+    new_private_dir(&fresh).map_err(io_err(format!("make {}", fresh.display())))?;
     let filled = match fill(&fresh) {
         Ok(v) => v,
         Err(e) => {

@@ -632,13 +632,7 @@ fn real_dir(path: &Path, rel: &str) -> Result<()> {
 }
 
 fn private_mkdir(path: &Path) -> Result<()> {
-    let mut builder = fs::DirBuilder::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder.create(path).map_err(io_err(format!("make the folder {}", path.display())))
+    crate::files::new_private_dir(path).map_err(io_err(format!("make the folder {}", path.display())))
 }
 
 #[cfg(unix)]
@@ -648,6 +642,7 @@ fn set_mode(path: &Path, mode: u32) -> Result<()> {
 }
 
 #[cfg(not(unix))]
+#[expect(clippy::unnecessary_wraps, reason = "the same signature as the Unix version")]
 fn set_mode(_: &Path, _: u32) -> Result<()> {
     Ok(())
 }

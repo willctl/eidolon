@@ -19,12 +19,24 @@ pub(crate) fn private_dir(path: &Path) -> io::Result<()> {
     builder.create(path)
 }
 
+/// Makes the folder `path`, owner-only; fails if it is already there.
+pub(crate) fn new_private_dir(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new().mode(0o700).create(path)
+    }
+    #[cfg(not(unix))]
+    fs::DirBuilder::new().create(path)
+}
+
 #[cfg(unix)]
 pub(crate) fn sync_dir(path: &Path) -> io::Result<()> {
     File::open(path)?.sync_all()
 }
 
 #[cfg(not(unix))]
+#[expect(clippy::unnecessary_wraps, reason = "the same signature as the Unix version")]
 pub(crate) fn sync_dir(_: &Path) -> io::Result<()> {
     Ok(())
 }

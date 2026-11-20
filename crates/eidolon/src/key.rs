@@ -197,6 +197,7 @@ fn only_owner_reads(path: &Path) -> Result<()> {
 }
 
 #[cfg(not(unix))]
+#[expect(clippy::unnecessary_wraps, reason = "the same signature as the Unix version")]
 fn only_owner_reads(_: &Path) -> Result<()> {
     Ok(())
 }
