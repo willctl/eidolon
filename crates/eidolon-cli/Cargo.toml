@@ -1,7 +1,7 @@
 [package]
 name = "eidolon-cli"
 description = "The eidolon command, with --json on every command."
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -12,19 +12,16 @@ publish.workspace = true
 [[bin]]
 name = "eidolon"
 path = "src/main.rs"
+doc = false
 
 [dependencies]
-eidolon = { workspace = true, features = ["browser"] }
-serde.workspace = true
+clap.workspace = true
+eidolon.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
 
 [dev-dependencies]
-# The tests record their cells in a ledger of their own; the live ones make real VMs.
-adytum.workspace = true
-# The binary the tests run reads EIDOLON_TEST_CELLS and stops at the kill tests' steps.
-eidolon = { workspace = true, features = ["testing"] }
-xenonet-id.workspace = true
+tar.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

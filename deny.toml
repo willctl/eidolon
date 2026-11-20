@@ -17,12 +17,17 @@ unmaintained = "all"
 unsound = "all"
 yanked = "deny"
 ignore = [
-  { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained with no safe upgrade; XenoNet (a dependency) carries the same advisory" },
+  { id = "RUSTSEC-2023-0071", reason = "rsa comes with age's ssh feature; Eidolon only encrypts to an ssh-rsa extra recipient and never decrypts with an RSA key, where the timing leak is" },
+  { id = "RUSTSEC-2026-0387", reason = "crypto-bigint comes with p256 in age for tag and plugin recipients, used on public keys only; machine keys are Ed25519" },
+  { id = "RUSTSEC-2026-0374", reason = "basic-toml reads age's translation config at build time; no safe upgrade until age moves off it" },
+  { id = "RUSTSEC-2026-0370", reason = "zvariant comes with keyring's Linux Secret Service store; no maintained replacement in keyring 4 yet" },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names, as zvariant" },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive, as zvariant" },
 ]
 
 [licenses]
 confidence-threshold = 0.93
-allow = ["MIT", "Apache-2.0", "ISC", "Unicode-3.0", "Zlib", "BSD-3-Clause"]
+allow = ["MIT", "Apache-2.0", "Unicode-3.0", "BSD-2-Clause", "BSD-3-Clause"]
 
 [licenses.private]
 # The workspace's own crates aren't published.
@@ -37,5 +42,3 @@ allow-wildcard-paths = true
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# Adytum and XenoNet's id, os and text crates come from their repositories.
-allow-git = ["https://github.com/willctl/adytum", "https://github.com/willctl/xenonet"]

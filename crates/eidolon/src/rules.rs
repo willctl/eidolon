@@ -1,59 +1,51 @@
-use crate::model::{verify, EidolonSpec, HolderKey, Refusal, RefusalCode, SignedSeat, State, Wall};
-use crate::pack::SignedHead;
+//! What may hold a seat, and which seat may follow which.
 
-pub fn may_hold(spec: &EidolonSpec, machine: &HolderKey) -> Result<(), Refusal> {
-    if spec.holder_by_key(machine).is_some() {
+use crate::error::{Code, Refusal};
+use crate::holders::Holders;
+use crate::key::HolderKey;
+use crate::seat::SignedSeat;
+
+pub fn may_hold(holders: &Holders, machine: &HolderKey) -> Result<(), Refusal> {
+    if holders.by_key(machine).is_some() {
         Ok(())
     } else {
-        Err(not_a_holder())
+        Err(Refusal::new(Code::NotAHolder, "That machine is not on the holder list.", "Add it with `eidolon holders add` on every machine first."))
     }
 }
 
-/// A machine may open the eidolon only when the current seat names it, the
-/// eidolon is not retired and it is not open anywhere else.
-pub fn may_open(state: &State, current: &SignedSeat, machine: &HolderKey, already_open_elsewhere: bool) -> Result<(), Refusal> {
-    if *state == State::Retired {
-        return Err(Refusal::new(RefusalCode::Retired, "That eidolon is retired.", "Make a new eidolon; a retired one never opens again."));
-    }
-    if current.record.holder != *machine {
-        return Err(Refusal::new(RefusalCode::SecondSeat, "The seat is another machine's.", "Move the eidolon here first, from the machine that holds it."));
-    }
-    if already_open_elsewhere || matches!(state, State::Open { .. }) {
-        return Err(Refusal::new(RefusalCode::SecondSeat, "That eidolon is already open in a cell.", "Close it there before opening it again."));
-    }
-    Ok(())
-}
-
-/// Whether `next` may replace `current` as the seat. The first seat
-/// (`current` is none) is generation 1, has no previous holder and is signed
-/// by its own holder. Every later one is the next generation, signed by the
-/// holder of the seat it replaces, naming a machine on the list, with that
-/// holder as its `previous`.
-pub fn accept_seat(spec: &EidolonSpec, current: Option<&SignedSeat>, next: &SignedSeat) -> Result<(), Refusal> {
+/// Whether `next` may follow `current` as the seat of `target`. The first
+/// seat (`current` is none) is generation 1, has no previous holder and is
+/// signed by its own holder. Every later one is the next generation, signed
+/// by the holder of the seat it follows, naming a machine on the list, with
+/// that holder as its `previous`.
+pub fn accept_seat(holders: &Holders, target: &str, current: Option<&SignedSeat>, next: &SignedSeat) -> Result<(), Refusal> {
     let n = &next.record;
-    if n.eidolon != spec.id || current.is_some_and(|c| c.record.eidolon != n.eidolon) {
-        return Err(Refusal::new(RefusalCode::StaleGeneration, "That seat record is for another eidolon.", "Ask the sender for this eidolon's seat."));
+    if n.target != target || current.is_some_and(|c| c.record.target != n.target) {
+        return Err(Refusal::new(Code::StaleGeneration, format!("That seat is for {:?}, not {target:?}.", n.target), "Ask the sender for this target's seat."));
     }
-    let want = current.map_or(1, |c| c.record.generation.saturating_add(1));
-    if n.generation != want || (current.is_some() && want == 1) {
+    let want = match current {
+        None => Some(1),
+        Some(c) => c.record.generation.checked_add(1),
+    };
+    if Some(n.generation) != want {
         return Err(Refusal::new(
-            RefusalCode::StaleGeneration,
-            format!("That seat is generation {} and this one needs {want}.", n.generation),
+            Code::StaleGeneration,
+            format!("That seat is generation {} and this one needs {}.", n.generation, want.map_or_else(|| "one past the last".to_owned(), |w| w.to_string())),
             "Ask the sender to start the move again from the current seat.",
         ));
     }
     let signer = current.map_or(&n.holder, |c| &c.record.holder);
-    if !verify(next, signer) {
+    if !next.signed_by(signer) {
         return Err(Refusal::new(
-            RefusalCode::SeatNotSignedByHolder,
-            "That seat was not signed by the machine that holds the current one.",
-            "Move the eidolon from the machine that holds it.",
+            Code::SeatNotSignedByHolder,
+            "That seat was not signed by the machine that holds the one before it.",
+            "Move the target from the machine that holds it.",
         ));
     }
-    may_hold(spec, &n.holder)?;
-    if n.previous != current.map(|c| c.record.holder) {
+    may_hold(holders, &n.holder)?;
+    if n.previous.as_ref() != current.map(|c| &c.record.holder) {
         return Err(Refusal::new(
-            RefusalCode::StaleGeneration,
+            Code::StaleGeneration,
             "That seat does not name the current holder as the previous one.",
             "Ask the sender to start the move again from the current seat.",
         ));
@@ -61,235 +53,217 @@ pub fn accept_seat(spec: &EidolonSpec, current: Option<&SignedSeat>, next: &Sign
     Ok(())
 }
 
-pub fn same_wall(eidolon_wall: &Wall, cell_wall: &Wall) -> Result<(), Refusal> {
-    if eidolon_wall == cell_wall {
-        Ok(())
-    } else {
-        Err(Refusal::new(RefusalCode::WrongWall, format!("That eidolon belongs behind {eidolon_wall}, not {cell_wall}."), "Open it in a cell behind its own wall."))
+/// Checks a history of seats link by link. With `known`, the history must
+/// contain that exact seat and is checked from there; without, it starts at
+/// generation 1.
+pub fn accept_chain(holders: &Holders, target: &str, known: Option<&SignedSeat>, chain: &[SignedSeat]) -> Result<(), Refusal> {
+    let start = match known {
+        None => {
+            let first = chain.first().ok_or_else(|| Refusal::new(Code::StaleGeneration, "There is no seat.", "Seal the target first."))?;
+            accept_seat(holders, target, None, first)?;
+            0
+        }
+        Some(known) => match chain.iter().position(|s| s.record.generation == known.record.generation) {
+            Some(i) if chain[i] == *known => i,
+            Some(_) => {
+                return Err(Refusal::new(
+                    Code::SecondSeat,
+                    format!("The offered history differs from this machine's at generation {}.", known.record.generation),
+                    "Two machines claim the seat; decide which one holds the target and settle the other.",
+                ))
+            }
+            None => {
+                return Err(Refusal::new(
+                    Code::StaleGeneration,
+                    format!("The offered history does not reach generation {}, which this machine has.", known.record.generation),
+                    "Move from the machine that holds the newest seat.",
+                ))
+            }
+        },
+    };
+    for pair in chain[start..].windows(2) {
+        accept_seat(holders, target, Some(&pair[0]), &pair[1])?;
     }
+    Ok(())
 }
 
-/// An eidolon opens only from a head that a machine on its holder list
-/// signed. After several moves the signer may be neither the holder nor
-/// the sender of the last move.
-pub fn head_signed_by_holder(spec: &EidolonSpec, head: &SignedHead) -> Result<(), Refusal> {
-    if spec.holders.iter().any(|h| head.verify(&h.sign)) {
-        Ok(())
-    } else {
-        Err(Refusal::new(
-            RefusalCode::HeadNotSignedByHolder,
-            "The head is not signed by any machine on the holder list.",
-            "Do not open it; ask the machine that sealed it to seal again.",
-        ))
-    }
-}
-
-pub fn leave_out_is_inside(pattern: &str) -> Result<(), Refusal> {
-    let escapes = pattern.starts_with('/') || pattern.starts_with('\\') || pattern.split(['/', '\\']).any(|part| part == "..") || pattern.contains('\0');
+/// A rule's glob is written relative to the target, inside it.
+pub fn pattern_is_inside(pattern: &str) -> Result<(), Refusal> {
+    let escapes = pattern.is_empty() || pattern.starts_with(['/', '\\']) || pattern.split(['/', '\\']).any(|part| part == "..") || pattern.contains('\0') || pattern.contains(':');
     if escapes {
-        Err(Refusal::new(RefusalCode::LeaveOutEscapes, format!("The leave-out pattern {pattern:?} reaches outside its facet."), "Write it relative to the facet, without `..`."))
+        Err(Refusal::new(Code::BadTarget, format!("The pattern {pattern:?} reaches outside the target."), "Write it relative to the target's folder, without `..`."))
     } else {
         Ok(())
     }
-}
-
-fn not_a_holder() -> Refusal {
-    Refusal::new(RefusalCode::NotAHolder, "That machine is not on the holder list.", "Add it to the eidolon's holders first, or pick a listed machine.")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{EidolonId, Holder, SeatRecord};
+    use crate::holders::Holder;
+    use crate::key::MachineKey;
+    use crate::seat::SeatRecord;
     use proptest::prelude::*;
-    use xenonet_id::sign::{KeyHome, SeedSigner, Signer};
 
-    struct Machine {
-        signer: SeedSigner,
-        key: HolderKey,
+    fn machine(n: u8) -> MachineKey {
+        MachineKey::from_seed([n; 32])
     }
 
-    fn machine(n: u8) -> Machine {
-        let signer = SeedSigner::from_seed(&[n; 32], KeyHome::File).unwrap();
-        let key = HolderKey::from_verifying_key(&signer.public()).unwrap();
-        Machine { signer, key }
+    fn seat(target: &str, generation: u64, holder: &MachineKey, previous: Option<&MachineKey>, signed_by: &MachineKey) -> SignedSeat {
+        let record = SeatRecord::new(target, generation, holder.public().clone(), previous.map(|p| p.public().clone()), "ab".repeat(32));
+        SignedSeat::sign(record, signed_by).unwrap()
     }
 
-    fn seat(eid: EidolonId, generation: u64, holder: &Machine, previous: Option<&Machine>, signed_by: &Machine) -> SignedSeat {
-        let record = SeatRecord { eidolon: eid, generation, holder: holder.key, previous: previous.map(|p| p.key), at: "2026-01-02T03:04:05Z".into() };
-        SignedSeat::sign(record, &signed_by.signer).unwrap()
+    fn list(machines: &[&MachineKey]) -> Holders {
+        let mut holders = Holders::default();
+        for (i, m) in machines.iter().enumerate() {
+            holders.add(Holder { name: format!("m{i}"), key: m.public().clone() }).unwrap();
+        }
+        holders
     }
 
-    fn spec_for(machines: &[&Machine]) -> EidolonSpec {
-        let wall: Wall = "wall_work".parse().unwrap();
-        let holders = machines.iter().enumerate().map(|(i, m)| Holder { name: format!("m{i}"), sign: m.key, seal: [0; 32] }).collect();
-        EidolonSpec { id: EidolonId::from_bytes([5; 16]), wall, holders, facets: vec![] }
-    }
-
-    fn code(r: Result<(), Refusal>) -> Option<RefusalCode> {
+    fn code(r: Result<(), Refusal>) -> Option<Code> {
         r.err().map(|e| e.code)
     }
 
-    // may_hold
+    const T: &str = "firefox";
 
     #[test]
     fn a_machine_off_the_list_may_not_hold() {
         let (desk, tower, stranger) = (machine(1), machine(2), machine(3));
-        let spec = spec_for(&[&desk, &tower]);
-        assert_eq!(code(may_hold(&spec, &stranger.key)), Some(RefusalCode::NotAHolder));
+        let holders = list(&[&desk, &tower]);
+        assert_eq!(code(may_hold(&holders, stranger.public())), Some(Code::NotAHolder));
+        assert!(may_hold(&holders, tower.public()).is_ok());
     }
-
-    #[test]
-    fn a_listed_machine_may_hold() {
-        let (desk, tower) = (machine(1), machine(2));
-        let spec = spec_for(&[&desk, &tower]);
-        assert!(may_hold(&spec, &tower.key).is_ok());
-    }
-
-    // may_open
-
-    #[test]
-    fn a_seat_naming_another_machine_does_not_open_here() {
-        let (desk, tower) = (machine(1), machine(2));
-        let s = seat(EidolonId::from_bytes([5; 16]), 1, &desk, None, &desk);
-        assert_eq!(code(may_open(&State::Sealed, &s, &tower.key, false)), Some(RefusalCode::SecondSeat));
-    }
-
-    #[test]
-    fn an_eidolon_open_elsewhere_does_not_open_again() {
-        let desk = machine(1);
-        let s = seat(EidolonId::from_bytes([5; 16]), 1, &desk, None, &desk);
-        assert_eq!(code(may_open(&State::Sealed, &s, &desk.key, true)), Some(RefusalCode::SecondSeat));
-        assert_eq!(code(may_open(&State::Open { cell: "adytum-a".into() }, &s, &desk.key, false)), Some(RefusalCode::SecondSeat));
-    }
-
-    #[test]
-    fn a_retired_eidolon_never_opens() {
-        let desk = machine(1);
-        let s = seat(EidolonId::from_bytes([5; 16]), 1, &desk, None, &desk);
-        assert_eq!(code(may_open(&State::Retired, &s, &desk.key, false)), Some(RefusalCode::Retired));
-    }
-
-    #[test]
-    fn the_seat_holder_opens_a_sealed_eidolon() {
-        let desk = machine(1);
-        let s = seat(EidolonId::from_bytes([5; 16]), 1, &desk, None, &desk);
-        assert!(may_open(&State::Sealed, &s, &desk.key, false).is_ok());
-    }
-
-    // accept_seat
 
     #[test]
     fn a_seat_that_skips_or_repeats_a_generation_is_refused() {
         let (desk, tower) = (machine(1), machine(2));
-        let spec = spec_for(&[&desk, &tower]);
-        let cur = seat(spec.id, 3, &desk, None, &desk);
+        let holders = list(&[&desk, &tower]);
+        let cur = seat(T, 3, &desk, None, &desk);
         for g in [3, 5, 1] {
-            let next = seat(spec.id, g, &tower, Some(&desk), &desk);
-            assert_eq!(code(accept_seat(&spec, Some(&cur), &next)), Some(RefusalCode::StaleGeneration), "generation {g}");
+            let next = seat(T, g, &tower, Some(&desk), &desk);
+            assert_eq!(code(accept_seat(&holders, T, Some(&cur), &next)), Some(Code::StaleGeneration), "generation {g}");
         }
-        let second_first = seat(spec.id, 2, &desk, None, &desk);
-        assert_eq!(code(accept_seat(&spec, None, &second_first)), Some(RefusalCode::StaleGeneration), "a first seat is generation 1");
+        let second_first = seat(T, 2, &desk, None, &desk);
+        assert_eq!(code(accept_seat(&holders, T, None, &second_first)), Some(Code::StaleGeneration), "a first seat is generation 1");
     }
 
     #[test]
-    fn a_seat_for_another_eidolon_is_refused() {
-        let (desk, tower) = (machine(1), machine(2));
-        let spec = spec_for(&[&desk, &tower]);
-        let other = seat(EidolonId::from_bytes([6; 16]), 1, &desk, None, &desk);
-        assert_eq!(code(accept_seat(&spec, None, &other)), Some(RefusalCode::StaleGeneration));
+    fn a_seat_for_another_target_is_refused() {
+        let desk = machine(1);
+        let holders = list(&[&desk]);
+        let other = seat("notes", 1, &desk, None, &desk);
+        assert_eq!(code(accept_seat(&holders, T, None, &other)), Some(Code::StaleGeneration));
     }
 
     #[test]
     fn a_seat_not_signed_by_the_current_holder_is_refused() {
         let (desk, tower, third) = (machine(1), machine(2), machine(3));
-        let spec = spec_for(&[&desk, &tower, &third]);
-        let cur = seat(spec.id, 1, &desk, None, &desk);
-        // Signed by the receiver itself, and by a third listed machine.
+        let holders = list(&[&desk, &tower, &third]);
+        let cur = seat(T, 1, &desk, None, &desk);
         for signer in [&tower, &third] {
-            let next = seat(spec.id, 2, &tower, Some(&desk), signer);
-            assert_eq!(code(accept_seat(&spec, Some(&cur), &next)), Some(RefusalCode::SeatNotSignedByHolder));
+            let next = seat(T, 2, &tower, Some(&desk), signer);
+            assert_eq!(code(accept_seat(&holders, T, Some(&cur), &next)), Some(Code::SeatNotSignedByHolder));
         }
-        // A first seat signed by someone other than its holder.
-        let first = seat(spec.id, 1, &desk, None, &tower);
-        assert_eq!(code(accept_seat(&spec, None, &first)), Some(RefusalCode::SeatNotSignedByHolder));
+        let first = seat(T, 1, &desk, None, &tower);
+        assert_eq!(code(accept_seat(&holders, T, None, &first)), Some(Code::SeatNotSignedByHolder));
     }
 
     #[test]
     fn a_seat_naming_a_machine_off_the_list_is_refused() {
         let (desk, stranger) = (machine(1), machine(3));
-        let spec = spec_for(&[&desk]);
-        let cur = seat(spec.id, 1, &desk, None, &desk);
-        let next = seat(spec.id, 2, &stranger, Some(&desk), &desk);
-        assert_eq!(code(accept_seat(&spec, Some(&cur), &next)), Some(RefusalCode::NotAHolder));
+        let holders = list(&[&desk]);
+        let cur = seat(T, 1, &desk, None, &desk);
+        let next = seat(T, 2, &stranger, Some(&desk), &desk);
+        assert_eq!(code(accept_seat(&holders, T, Some(&cur), &next)), Some(Code::NotAHolder));
     }
 
     #[test]
     fn a_seat_with_the_wrong_previous_holder_is_refused() {
         let (desk, tower, third) = (machine(1), machine(2), machine(3));
-        let spec = spec_for(&[&desk, &tower, &third]);
-        let cur = seat(spec.id, 1, &desk, None, &desk);
+        let holders = list(&[&desk, &tower, &third]);
+        let cur = seat(T, 1, &desk, None, &desk);
         for previous in [Some(&third), None] {
-            let next = seat(spec.id, 2, &tower, previous, &desk);
-            assert_eq!(code(accept_seat(&spec, Some(&cur), &next)), Some(RefusalCode::StaleGeneration));
+            let next = seat(T, 2, &tower, previous, &desk);
+            assert_eq!(code(accept_seat(&holders, T, Some(&cur), &next)), Some(Code::StaleGeneration));
         }
     }
 
     #[test]
     fn the_first_seat_and_the_next_one_are_accepted() {
         let (desk, tower) = (machine(1), machine(2));
-        let spec = spec_for(&[&desk, &tower]);
-        let first = seat(spec.id, 1, &desk, None, &desk);
-        assert!(accept_seat(&spec, None, &first).is_ok());
-        let next = seat(spec.id, 2, &tower, Some(&desk), &desk);
-        assert!(accept_seat(&spec, Some(&first), &next).is_ok());
+        let holders = list(&[&desk, &tower]);
+        let first = seat(T, 1, &desk, None, &desk);
+        assert!(accept_seat(&holders, T, None, &first).is_ok());
+        let next = seat(T, 2, &tower, Some(&desk), &desk);
+        assert!(accept_seat(&holders, T, Some(&first), &next).is_ok());
     }
 
-    // same_wall
-
     #[test]
-    fn another_wall_is_refused_and_the_same_one_is_not() {
-        let (a, b): (Wall, Wall) = ("wall_a".parse().unwrap(), "wall_b".parse().unwrap());
-        assert_eq!(code(same_wall(&a, &b)), Some(RefusalCode::WrongWall));
-        assert!(same_wall(&a, &a).is_ok());
+    fn a_chain_is_checked_from_the_seat_this_machine_knows() {
+        let (desk, tower, third) = (machine(1), machine(2), machine(3));
+        let holders = list(&[&desk, &tower, &third]);
+        let chain = [seat(T, 1, &desk, None, &desk), seat(T, 2, &tower, Some(&desk), &desk), seat(T, 3, &desk, Some(&tower), &tower)];
+        assert!(accept_chain(&holders, T, None, &chain).is_ok());
+        assert!(accept_chain(&holders, T, Some(&chain[1]), &chain).is_ok());
+        assert_eq!(code(accept_chain(&holders, T, None, &chain[1..])), Some(Code::StaleGeneration), "a history must start at 1");
+        let fork = seat(T, 2, &third, Some(&desk), &desk);
+        assert_eq!(code(accept_chain(&holders, T, Some(&fork), &chain)), Some(Code::SecondSeat));
+        let newer = seat(T, 4, &tower, Some(&desk), &desk);
+        assert_eq!(code(accept_chain(&holders, T, Some(&newer), &chain)), Some(Code::StaleGeneration));
+        let forged = [chain[0].clone(), chain[1].clone(), seat(T, 3, &third, Some(&tower), &third)];
+        assert_eq!(code(accept_chain(&holders, T, None, &forged)), Some(Code::SeatNotSignedByHolder));
     }
 
-    // leave_out_is_inside
-
     #[test]
-    fn a_leave_out_that_escapes_is_refused() {
-        for p in ["/etc/passwd", "../x", "a/../../b", "a/..", "..", "\\windows", "a\\..\\b", "a\0b"] {
-            assert_eq!(code(leave_out_is_inside(p)), Some(RefusalCode::LeaveOutEscapes), "{p:?}");
+    fn a_pattern_that_escapes_is_refused() {
+        for p in ["/etc/passwd", "../x", "a/../../b", "a/..", "..", "\\windows", "a\\..\\b", "a\0b", "C:x", ""] {
+            assert_eq!(code(pattern_is_inside(p)), Some(Code::BadTarget), "{p:?}");
+        }
+        for p in ["cache2", "cache2/**", "*.lock", "a/b..c", "..hidden/x", "Crash Reports/**"] {
+            assert!(pattern_is_inside(p).is_ok(), "{p:?}");
         }
     }
-
-    #[test]
-    fn a_relative_leave_out_is_fine() {
-        for p in ["cache2/**", "*.lock", "a/b..c", "..hidden/x", "Crash Reports/**"] {
-            assert!(leave_out_is_inside(p).is_ok(), "{p:?}");
-        }
-    }
-
-    // properties
 
     proptest! {
         #[test]
         fn any_generation_but_the_next_is_refused(cur_gen in 1u64..u64::MAX - 1, next_gen in any::<u64>()) {
             prop_assume!(next_gen != cur_gen + 1);
             let (desk, tower) = (machine(1), machine(2));
-            let spec = spec_for(&[&desk, &tower]);
-            let cur = seat(spec.id, cur_gen, &desk, None, &desk);
-            let next = seat(spec.id, next_gen, &tower, Some(&desk), &desk);
-            prop_assert_eq!(code(accept_seat(&spec, Some(&cur), &next)), Some(RefusalCode::StaleGeneration));
+            let holders = list(&[&desk, &tower]);
+            let cur = seat(T, cur_gen, &desk, None, &desk);
+            let next = seat(T, next_gen, &tower, Some(&desk), &desk);
+            prop_assert_eq!(code(accept_seat(&holders, T, Some(&cur), &next)), Some(Code::StaleGeneration));
         }
 
         #[test]
-        fn any_machine_off_the_list_is_refused(key in any::<[u8; 32]>()) {
+        fn nothing_follows_the_last_generation(next_gen in any::<u64>()) {
             let (desk, tower) = (machine(1), machine(2));
-            let spec = spec_for(&[&desk, &tower]);
-            let key = HolderKey::from_bytes(key);
-            prop_assume!(key != desk.key && key != tower.key);
-            prop_assert_eq!(code(may_hold(&spec, &key)), Some(RefusalCode::NotAHolder));
+            let holders = list(&[&desk, &tower]);
+            let cur = seat(T, u64::MAX, &desk, None, &desk);
+            let next = seat(T, next_gen, &tower, Some(&desk), &desk);
+            prop_assert_eq!(code(accept_seat(&holders, T, Some(&cur), &next)), Some(Code::StaleGeneration));
+        }
+
+        #[test]
+        fn any_machine_off_the_list_is_refused(seed in any::<[u8; 32]>()) {
+            let (desk, tower) = (machine(1), machine(2));
+            let holders = list(&[&desk, &tower]);
+            let stranger = MachineKey::from_seed(seed);
+            prop_assume!(stranger.public() != desk.public() && stranger.public() != tower.public());
+            prop_assert_eq!(code(may_hold(&holders, stranger.public())), Some(Code::NotAHolder));
+        }
+
+        #[test]
+        fn any_signer_but_the_current_holder_is_refused(seed in any::<[u8; 32]>()) {
+            let (desk, tower) = (machine(1), machine(2));
+            let signer = MachineKey::from_seed(seed);
+            prop_assume!(signer.public() != desk.public());
+            let holders = list(&[&desk, &tower]);
+            let cur = seat(T, 1, &desk, None, &desk);
+            let next = seat(T, 2, &tower, Some(&desk), &signer);
+            prop_assert_eq!(code(accept_seat(&holders, T, Some(&cur), &next)), Some(Code::SeatNotSignedByHolder));
         }
     }
 }

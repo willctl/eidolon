@@ -1,134 +1,103 @@
-use crate::model::Refusal;
-use crate::vault::ChunkName;
+use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::io;
 
-/// Why something Eidolon was asked to do did not happen. [`Error::code`] is
-/// stable, for scripts; the text says what happened and what to do.
+macro_rules! codes {
+    ($($variant:ident => $text:literal,)*) => {
+        /// Why Eidolon said no. The text of each code is stable.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        pub enum Code {
+            $(#[serde(rename = $text)] $variant,)*
+        }
+
+        impl Code {
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(Code::$variant => $text,)*
+                }
+            }
+        }
+    };
+}
+
+codes! {
+    NotAHolder => "not_a_holder",
+    NotTheHolder => "not_the_holder",
+    StaleGeneration => "stale_generation",
+    SeatNotSignedByHolder => "seat_not_signed_by_holder",
+    SecondSeat => "second_seat",
+    HoldersDiffer => "holders_differ",
+    TargetDiffers => "target_differs",
+    UnknownTarget => "unknown_target",
+    UnknownHolder => "unknown_holder",
+    NoPath => "no_path",
+    NotSealed => "not_sealed",
+    NotOpened => "not_opened",
+    Changed => "changed",
+    Busy => "busy",
+    NoKey => "no_key",
+    Ahead => "ahead",
+    AppRunning => "app_running",
+    MovePending => "move_pending",
+    NoPending => "no_pending",
+    UnsafeEntry => "unsafe_entry",
+    TooLarge => "too_large",
+    BundleChanged => "bundle_changed",
+    NotForThisMachine => "not_for_this_machine",
+    BadAck => "bad_ack",
+    BadOffer => "bad_offer",
+    BadTarget => "bad_target",
+    BadHolder => "bad_holder",
+    BadRecipient => "bad_recipient",
+    BadName => "bad_name",
+    KeyNotPrivate => "key_not_private",
+    NoKeyStore => "no_key_store",
+}
+
+/// A rule's no: a code to match on, what happened, and what to do about it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Refusal {
+    pub code: Code,
+    pub message: String,
+    pub fix: String,
+}
+
+impl Refusal {
+    pub fn new(code: Code, message: impl Into<String>, fix: impl Into<String>) -> Refusal {
+        Refusal { code, message: message.into(), fix: fix.into() }
+    }
+}
+
+impl fmt::Display for Refusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {}", self.message, self.fix)
+    }
+}
+
 #[derive(Debug)]
 pub enum Error {
     Refused(Refusal),
-    RefusedByPeer(Refusal),
-    /// A chunk did not open, or opened to something its name does not name.
-    ChangedChunk,
-    ChunkTooLarge,
-    MissingChunk(ChunkName),
-    BadValue {
-        what: &'static str,
-        rule: &'static str,
-    },
-    Damaged {
-        what: &'static str,
-        why: String,
-    },
-    UnsafePath(String),
-    NotEmpty(String),
-    Cut,
-    Protocol(String),
-    Io {
-        what: &'static str,
-        source: std::io::Error,
-    },
-    Crypto(&'static str),
-    KeyStore(String),
-    Cell(adytum::Error),
-    Command {
-        what: String,
-        status: Option<i32>,
-        stderr: String,
-    },
-    Fingerprint {
-        expected: String,
-        found: Vec<String>,
-    },
-    #[cfg(feature = "browser")]
-    Bidi(crate::bidi::Error),
-    #[cfg(feature = "browser")]
-    GaveUp {
-        attempts: u32,
-        last: String,
-    },
-    #[cfg(feature = "browser")]
-    Mcp(String),
+    Io { doing: String, source: io::Error },
 }
 
-pub type Result<T, E = Error> = std::result::Result<T, E>;
-
 impl Error {
-    pub fn code(&self) -> String {
-        let code = match self {
-            Error::Refused(r) | Error::RefusedByPeer(r) => r.code.as_str(),
-            Error::ChangedChunk | Error::ChunkTooLarge | Error::MissingChunk(_) => "changed_chunk",
-            Error::BadValue { .. } => "bad_value",
-            Error::Damaged { .. } => "damaged",
-            Error::UnsafePath(_) => "unsafe_path",
-            Error::NotEmpty(_) => "not_empty",
-            Error::Cut => "cut",
-            Error::Protocol(_) => "protocol",
-            Error::Io { .. } => "io",
-            Error::Crypto(_) => "crypto",
-            Error::KeyStore(_) => "key_store",
-            Error::Cell(e) => e.code(),
-            Error::Command { .. } => "cell_command",
-            Error::Fingerprint { .. } => "fingerprint",
-            #[cfg(feature = "browser")]
-            Error::Bidi(_) | Error::GaveUp { .. } => "browser",
-            #[cfg(feature = "browser")]
-            Error::Mcp(_) => "mcp",
-        };
-        code.to_owned()
-    }
-
-    pub(crate) fn io(what: &'static str) -> impl FnOnce(std::io::Error) -> Error {
-        move |source| Error::Io { what, source }
-    }
-
-    pub(crate) fn refused(code: crate::model::RefusalCode, message: impl Into<String>, fix: impl Into<String>) -> Error {
+    pub fn refused(code: Code, message: impl Into<String>, fix: impl Into<String>) -> Error {
         Error::Refused(Refusal::new(code, message, fix))
     }
 
-    pub(crate) fn random() -> Error {
-        Error::Crypto("the system gave no random numbers")
+    pub fn code(&self) -> Option<Code> {
+        match self {
+            Error::Refused(r) => Some(r.code),
+            Error::Io { .. } => None,
+        }
     }
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Refused(r) => write!(f, "{} {}", r.message, r.fix),
-            Error::RefusedByPeer(r) => write!(f, "The other machine refused: {} {}", r.message, r.fix),
-            Error::ChangedChunk | Error::ChunkTooLarge => {
-                f.write_str("A chunk does not match its name, so it was damaged or replaced. Move the eidolon again from the machine that sealed it.")
-            }
-            Error::MissingChunk(n) => write!(f, "The vault has no chunk {n}. Move the eidolon again from the machine that has it."),
-            Error::BadValue { what, rule } => write!(f, "That {what} is not valid. It must be {rule}."),
-            Error::Damaged { what, why } => write!(f, "The {what} is damaged ({why}). Restore it from the machine that sealed or sent the eidolon."),
-            Error::UnsafePath(path) => write!(f, "The entry {path:?} would write outside its folder, so nothing was unpacked. Do not open this manifest."),
-            Error::NotEmpty(path) => write!(f, "{path} is not empty. Unpack into a folder that does not exist yet or is empty."),
-            Error::Cut => f.write_str("The connection ended before the move finished. Run the move again; it sends only what is missing."),
-            Error::Protocol(why) => write!(f, "The other machine broke the move protocol: {why}. Check that both sides run the same version."),
-            Error::Io { what, source } => write!(f, "Could not {what}: {source}."),
-            Error::Crypto(why) => write!(f, "Encryption failed: {why}. Try again."),
-            Error::KeyStore(why) => write!(f, "The key store failed: {why}. Check that the keys folder can be written."),
-            Error::Cell(e) => write!(f, "{e} {}", e.fix()),
-            Error::Command { what, status, stderr } => {
-                let how = status.map_or_else(|| "was stopped".to_owned(), |s| format!("exited with status {s}"));
-                let said = if stderr.is_empty() { String::new() } else { format!(" It said: {stderr}") };
-                write!(f, "{what} failed: the command {how}.{said} Fix that and run it again; finished steps are safe to repeat.")
-            }
-            Error::Fingerprint { expected, found } => write!(
-                f,
-                "The key Mozilla's repository signs with is not the one Eidolon pins (wanted {expected}, found {}). Nothing was trusted. Check Mozilla's documentation before changing the pin.",
-                if found.is_empty() { "none".to_owned() } else { found.join(", ") }
-            ),
-            #[cfg(feature = "browser")]
-            Error::Bidi(e) => write!(f, "{e}."),
-            #[cfg(feature = "browser")]
-            Error::Mcp(why) => write!(f, "The MCP server stopped: {why}."),
-            #[cfg(feature = "browser")]
-            Error::GaveUp { attempts, last } => write!(
-                f,
-                "The browser did not answer after {attempts} attempts; the last said: {last}. Start it with `systemctl start eidolon-browser` in the cell and check `journalctl -u eidolon-browser`."
-            ),
+            Error::Refused(r) => r.fmt(f),
+            Error::Io { doing, source } => write!(f, "Could not {doing}: {source}."),
         }
     }
 }
@@ -136,9 +105,8 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Error::Refused(_) => None,
             Error::Io { source, .. } => Some(source),
-            Error::Cell(e) => Some(e),
-            _ => None,
         }
     }
 }
@@ -149,15 +117,24 @@ impl From<Refusal> for Error {
     }
 }
 
-impl From<adytum::Error> for Error {
-    fn from(e: adytum::Error) -> Error {
-        Error::Cell(e)
-    }
+pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// `io_err("read the holders")` turns an `io::Error` into an [`Error`] that says what failed.
+pub(crate) fn io_err(doing: impl Into<String>) -> impl FnOnce(io::Error) -> Error {
+    let doing = doing.into();
+    move |source| Error::Io { doing, source }
 }
 
-#[cfg(feature = "browser")]
-impl From<crate::bidi::Error> for Error {
-    fn from(e: crate::bidi::Error) -> Error {
-        Error::Bidi(e)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codes_travel_as_their_stable_text() {
+        for (code, text) in [(Code::NotAHolder, "not_a_holder"), (Code::SeatNotSignedByHolder, "seat_not_signed_by_holder"), (Code::UnsafeEntry, "unsafe_entry")] {
+            assert_eq!(code.as_str(), text);
+            assert_eq!(serde_json::to_string(&code).unwrap(), format!("\"{text}\""));
+            assert_eq!(serde_json::from_str::<Code>(&format!("\"{text}\"")).unwrap(), code);
+        }
     }
 }

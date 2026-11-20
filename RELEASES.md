@@ -1,11 +1,11 @@
 # Eidolon release notes
 
-## 0.1.0 (unreleased)
+## 0.3.0 (unreleased)
 
-- Keep a folder of a cell, or a Firefox profile with its sign-ins, as one sealed eidolon with `eidolon new`, `seal` and `open`.
-- Move an eidolon to another of your machines with `eidolon move <eid> -- ssh tower eidolon receive`. Only the chunks that changed cross, and only one machine can open it at a time.
-- Sign in to a site yourself with `eidolon view <eid>`. Automation is off while the window is open.
-- Give an agent the browser with `eidolon mcp <eid>`.
-- Use the same operations from Rust through the `eidolon` library.
+- Seal a folder target into an `age(zstd(tar))` bundle with `eidolon seal`, encrypted to every holder and any extra age recipients. Stock `age`, `zstd` and `tar` open it.
+- `firefox` is a built-in target; any other folder is a TOML file of include and exclude globs and an optional app lock.
+- Move a target with `eidolon send <target> --to tower -- ssh tower eidolon receive`, or as an offer file and an ack file. One machine holds it at a time, and the seats are SSHSIG that `ssh-keygen -Y verify` checks.
+- Open a target with `eidolon open` into a fresh folder that is checked entry by entry and swapped into place, or as a tar with `--tar`.
+- `eidolon key init` makes the machine key, in the system's key store or in an OpenSSH key file with `--key-file`. Reading commands write nothing.
 
-It needs Adytum for the cells, and builds with `cargo install --git`. [The README](README.md) lists the limits.
+[The README](README.md) lists the limits.
