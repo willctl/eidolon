@@ -1,0 +1,224 @@
+use crate::error::{Error, Result};
+use crate::model::{verify, EidolonId, HolderKey, Refusal, RefusalCode, SignedSeat};
+use crate::moving::holding::Holding;
+use crate::moving::wire::{self, kind, Ack, Hello, Iam, Offer, Refused, SeatMsg};
+use crate::moving::MoveStats;
+use crate::rules::{accept_seat, may_hold};
+use crate::vault::{unwrap_key, ChunkName, KeyRing, Keys, Vault};
+use std::collections::BTreeSet;
+use std::path::Path;
+use std::time::Instant;
+use tokio::io::{AsyncRead, AsyncWrite};
+use x25519_dalek::StaticSecret;
+use xenonet_id::codec::unb64;
+use xenonet_id::sign::Signer;
+
+/// Chunks are kept as they arrive, unchecked, because the key comes last. A
+/// chunk that then fails to open is removed and the move refused, so a run
+/// again fetches it, and a broken transfer resumes from what arrived.
+pub async fn receive<S>(mut stream: S, root: &Path, vault: &Vault, keyring: &KeyRing<'_>, signer: &dyn Signer, me: &HolderKey, seal_secret: &StaticSecret) -> Result<MoveStats>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let started = Instant::now();
+    let mut stats = MoveStats::default();
+    if HolderKey::from_verifying_key(&signer.public()) != Some(*me) {
+        return Err(Error::Protocol("the signer is not the key this machine is listed under".into()));
+    }
+
+    let (body, wire_in) = wire::read_expect(&mut stream, kind::HELLO).await?;
+    stats.bytes_received += wire_in;
+    let hello: Hello = wire::parse(&body)?;
+    if hello.protocol != wire::PROTOCOL {
+        return Err(Error::Protocol(format!("the sender speaks {:?} and this machine speaks {:?}", hello.protocol, wire::PROTOCOL)));
+    }
+    let challenge = wire::challenge_of(&hello)?;
+    let eid = hello.eidolon;
+    let proof = wire::attest(signer, &challenge, &eid, "iam", 0)?;
+    stats.bytes_sent += wire::write_json(&mut stream, kind::IAM, &Iam { holder: *me, proof }).await?;
+
+    let (body, wire_in) = wire::read_expect(&mut stream, kind::OFFER).await?;
+    stats.bytes_received += wire_in;
+    let offer: Offer = wire::parse(&body)?;
+    let head = unb64(&offer.head).ok_or_else(|| Error::Protocol("the head is not base64url".into()))?;
+
+    let current = match check_offer(&offer, &eid, me, root) {
+        Ok(current) => current,
+        Err(Error::Refused(r)) => return Err(refuse(&mut stream, r, None).await),
+        Err(e) => return Err(e),
+    };
+
+    let (names, wire_in) = wire::read_names(&mut stream, offer.chunks).await?;
+    stats.bytes_received += wire_in;
+    if names.len() as u64 != offer.chunks {
+        return Err(Error::Protocol("fewer names than were announced".into()));
+    }
+    let names: Vec<ChunkName> = names.into_iter().collect::<BTreeSet<_>>().into_iter().collect();
+    stats.chunks_offered = names.len() as u64;
+    let want: Vec<ChunkName> = names.iter().copied().filter(|n| !vault.has(n)).collect();
+    stats.bytes_sent += wire::write_names(&mut stream, &want).await?;
+
+    let mut missing: BTreeSet<ChunkName> = want.into_iter().collect();
+    loop {
+        let (got, body, wire_in) = wire::read_frame(&mut stream).await?;
+        stats.bytes_received += wire_in;
+        match got {
+            kind::CHUNK => {
+                let (raw, sealed) = body.split_at_checked(32).ok_or_else(|| Error::Protocol("a chunk frame is shorter than a name".into()))?;
+                let mut name = [0u8; 32];
+                name.copy_from_slice(raw);
+                if !missing.remove(&ChunkName(name)) {
+                    return Err(Error::Protocol("a chunk arrived that was not asked for".into()));
+                }
+                vault.put(&ChunkName(name), sealed)?;
+                stats.chunks_sent += 1;
+            }
+            kind::SENT => break,
+            kind::REFUSED => return Err(Error::RefusedByPeer(wire::parse::<Refused>(&body)?.refusal)),
+            other => return Err(Error::Protocol(format!("expected a chunk and got a frame of type {other}"))),
+        }
+    }
+    if !missing.is_empty() {
+        return Err(Error::Protocol("the sender stopped sending before all the asked-for chunks came".into()));
+    }
+
+    let (body, wire_in) = wire::read_expect(&mut stream, kind::SEAT).await?;
+    stats.bytes_received += wire_in;
+    let seat_msg: SeatMsg = wire::parse(&body)?;
+    let generation = seat_msg.next.record.generation;
+
+    // From here a refusal is signed: the sender has written its pending
+    // move and can tell this one is the receiver's, and that it kept
+    // nothing. A machine that already holds this generation or a later one
+    // does not sign, so a repeated move cannot undo itself.
+    let holds_it = Holding::exists(root, &eid) && Holding::load(root, &eid)?.seat.record.generation >= generation;
+    let outcome = take(&offer, &head, &names, &current, &seat_msg, root, vault, keyring, seal_secret, me);
+    match outcome {
+        Ok(()) => {
+            let proof = wire::attest(signer, &challenge, &eid, "ack", generation)?;
+            stats.bytes_sent += wire::write_json(&mut stream, kind::ACK, &Ack { generation, proof }).await?;
+        }
+        Err(Error::Refused(r)) => {
+            let proof = if holds_it { None } else { Some(wire::attest(signer, &challenge, &eid, "refused", generation)?) };
+            return Err(refuse(&mut stream, r, proof).await);
+        }
+        Err(e) => return Err(e),
+    }
+    stats.elapsed = started.elapsed();
+    Ok(stats)
+}
+
+async fn refuse<S: AsyncWrite + Unpin>(stream: &mut S, refusal: Refusal, proof: Option<String>) -> Error {
+    // The sender may already be gone; the refusal is returned either way.
+    let _ = wire::write_json(stream, kind::REFUSED, &Refused { refusal: refusal.clone(), proof }).await;
+    Error::Refused(refusal)
+}
+
+fn refusal(code: RefusalCode, message: &str, fix: &str) -> Error {
+    Error::Refused(Refusal::new(code, message, fix))
+}
+
+fn check_offer(offer: &Offer, eid: &EidolonId, me: &HolderKey, root: &Path) -> Result<SignedSeat> {
+    let spec = &offer.spec;
+    if spec.id != *eid || offer.seat.record.eidolon != *eid {
+        return Err(Error::Protocol("the offer is for another eidolon than the hello named".into()));
+    }
+    spec.validate()?;
+    may_hold(spec, me)?;
+
+    let local = if Holding::exists(root, eid) { Some(Holding::load(root, eid)?) } else { None };
+    if let Some(local) = &local {
+        if local.spec.wall != spec.wall {
+            return Err(refusal(
+                RefusalCode::WrongWall,
+                "This machine holds that eidolon behind another wall.",
+                "Check which eidolon you are moving; the id is already used here for another.",
+            ));
+        }
+        if local.spec.holders != spec.holders {
+            return Err(refusal(
+                RefusalCode::NotAHolder,
+                "The holder list differs from the one this machine holds.",
+                "Update the holder list on both machines the same way, then move again.",
+            ));
+        }
+        if !matches!(local.state, crate::model::State::Sealed | crate::model::State::Retired) {
+            return Err(refusal(RefusalCode::SecondSeat, "That eidolon is open on this machine.", "Close it here first."));
+        }
+    }
+
+    // A seat the sender shows is believed only as far as its signature:
+    // by the machine it names as previous, or by its own holder at
+    // generation 1; both on the holder list.
+    let offered = &offer.seat;
+    let signer = offered.record.previous.unwrap_or(offered.record.holder);
+    may_hold(spec, &signer)?;
+    may_hold(spec, &offered.record.holder)?;
+    if !verify(offered, &signer) {
+        return Err(refusal(
+            RefusalCode::SeatNotSignedByHolder,
+            "The seat the sender showed is not signed by a machine on the holder list.",
+            "Move the eidolon from the machine that holds it.",
+        ));
+    }
+    match local {
+        Some(local) if local.seat.record.generation > offered.record.generation => Ok(local.seat),
+        Some(local) if local.seat.record.generation == offered.record.generation => {
+            if local.seat.record == offered.record {
+                Ok(local.seat)
+            } else {
+                Err(refusal(
+                    RefusalCode::SecondSeat,
+                    "The sender's seat and this machine's differ at the same generation.",
+                    "Two machines claim the same seat; decide which one holds the eidolon and fix the other.",
+                ))
+            }
+        }
+        _ => Ok(offered.clone()),
+    }
+}
+
+#[expect(clippy::too_many_arguments, reason = "each is a separate thing the move has in hand")]
+fn take(
+    offer: &Offer,
+    head: &[u8],
+    names: &[ChunkName],
+    current: &SignedSeat,
+    msg: &SeatMsg,
+    root: &Path,
+    vault: &Vault,
+    keyring: &KeyRing<'_>,
+    seal_secret: &StaticSecret,
+    me: &HolderKey,
+) -> Result<()> {
+    let next = &msg.next;
+    if next.record.holder != *me {
+        return Err(refusal(RefusalCode::NotAHolder, "That seat names another machine.", "Move the eidolon to the machine that is meant to take it."));
+    }
+    accept_seat(&offer.spec, Some(current), next)?;
+    let key = unwrap_key(&msg.key, seal_secret, &wire::wrap_context(&offer.spec.id, next.record.generation))
+        .map_err(|_| refusal(RefusalCode::NotAHolder, "The key was not wrapped for this machine.", "Check that the holder list has this machine's current seal key."))?;
+    let keys = Keys::new(&key)?;
+    let mut changed = Vec::new();
+    for name in names {
+        match vault.get(name).and_then(|sealed| keys.open(name, &sealed)) {
+            Ok(_) => {}
+            Err(Error::ChangedChunk | Error::ChunkTooLarge | Error::MissingChunk(_)) => changed.push(*name),
+            Err(e) => return Err(e),
+        }
+    }
+    if !changed.is_empty() {
+        // Gone, so the next run fetches them again instead of trusting them.
+        for name in &changed {
+            vault.remove(name)?;
+        }
+        return Err(refusal(
+            RefusalCode::ChangedChunk,
+            &format!("{} chunk(s) did not open or did not match their names.", changed.len()),
+            "Run the move again; the damaged chunks were dropped and will be sent again.",
+        ));
+    }
+    keyring.put(&offer.spec.id.to_string(), &key)?;
+    Holding::install(root, offer.spec.clone(), next.clone(), head.to_vec(), names.to_vec())?;
+    Ok(())
+}

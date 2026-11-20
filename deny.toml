@@ -1,0 +1,41 @@
+# What `cargo deny check` holds the dependencies to: known advisories,
+# licenses that fit MIT, no wildcards, and crates only from crates.io.
+[graph]
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-pc-windows-msvc",
+  "aarch64-pc-windows-msvc",
+]
+
+[advisories]
+# Every RustSec advisory fails the check: vulnerable, unsound, unmaintained
+# or yanked. An exception goes in `ignore` with its reason.
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+ignore = [
+  { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained with no safe upgrade; XenoNet (a dependency) carries the same advisory" },
+]
+
+[licenses]
+confidence-threshold = 0.93
+allow = ["MIT", "Apache-2.0", "ISC", "Unicode-3.0", "Zlib", "BSD-3-Clause"]
+
+[licenses.private]
+# The workspace's own crates aren't published.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# The workspace's own crates are path dependencies.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# Adytum and XenoNet's id, os and text crates come from their repositories.
+allow-git = ["https://github.com/willctl/adytum", "https://github.com/willctl/xenonet"]
