@@ -23,13 +23,13 @@ use crate::seat::{SeatRecord, SignedSeat};
 use crate::swap;
 use crate::target::Target;
 use serde::Serialize;
-use std::fs;
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 pub struct Home {
     root: PathBuf,
-    key: MachineKey,
+    key: Option<MachineKey>,
 }
 
 /// Where a seal reads the target from.
@@ -89,23 +89,35 @@ pub struct Verified {
 }
 
 impl Home {
+    /// Opens a home and loads the machine key if there is one. Nothing is
+    /// written: folders appear with the first command that writes, and the
+    /// key only with [`MachineKey::create`] (`eidolon key init`).
     pub fn open(root: impl Into<PathBuf>, key: &KeySource) -> Result<Home> {
-        let root = root.into();
-        files::private_dir(&root).map_err(io_err(format!("make the home {}", root.display())))?;
-        let key = MachineKey::load_or_create(key)?;
-        Ok(Home { root, key })
+        Ok(Home { root: root.into(), key: MachineKey::load(key)? })
     }
 
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    pub fn key(&self) -> &MachineKey {
-        &self.key
+    pub fn key(&self) -> Result<&MachineKey> {
+        self.key.as_ref().ok_or_else(|| Error::refused(Code::NoKey, "This machine has no key yet.", "Run `eidolon key init` to make it."))
     }
 
-    pub(crate) fn me(&self) -> &HolderKey {
-        self.key.public()
+    /// This machine's public key, if it has one.
+    pub fn public_key(&self) -> Option<&HolderKey> {
+        self.key.as_ref().map(MachineKey::public)
+    }
+
+    pub(crate) fn me(&self) -> Result<&HolderKey> {
+        self.key().map(MachineKey::public)
+    }
+
+    /// Holds a target against every other command that changes it. A second
+    /// one is refused with `busy` until the first ends, or dies.
+    pub(crate) fn lock(&self, name: &str) -> Result<File> {
+        check_name("target", name)?;
+        lock_file(&self.dir(name).join("lock"), name)
     }
 
     pub fn holders(&self) -> Result<Holders> {
@@ -298,7 +310,7 @@ impl Home {
         let last = chain.last().cloned().ok_or_else(|| {
             Error::refused(Code::NotSealed, format!("{name} has not been sealed on this machine."), format!("Run `eidolon seal {name}` on the machine that has it."))
         })?;
-        if last.record.holder != *self.me() {
+        if last.record.holder != *self.me()? {
             return Err(Error::refused(
                 Code::NotTheHolder,
                 format!("{} holds {name} now (generation {}).", holders.name_of(&last.record.holder), last.record.generation),
@@ -308,12 +320,17 @@ impl Home {
         Ok((chain, last))
     }
 
-    /// Captures the target into a new bundle and signs the next seat for this machine.
-    pub fn seal(&self, name: &str, source: Source<'_>, extra: Vec<Recipient>) -> Result<Sealed> {
+    /// Captures the target into a new bundle and signs the next seat for
+    /// this machine. The capture passes the same checks as a restore, and
+    /// the new bundle is opened once before its seat is signed, so the last
+    /// good bundle goes only after a new one is known to open.
+    pub fn seal(&self, name: &str, source: Source<'_>, extra: Vec<Recipient>, limits: Limits) -> Result<Sealed> {
         let target = self.target(name)?;
         let rules = target.rules()?;
+        let key = self.key()?;
         let holders = self.holders()?;
-        may_hold(&holders, self.me())?;
+        may_hold(&holders, key.public())?;
+        let _busy = self.lock(name)?;
         let chain = match self.held(name, &holders) {
             Ok((chain, _)) => chain,
             Err(e) if e.code() == Some(Code::NotSealed) => Vec::new(),
@@ -322,55 +339,74 @@ impl Home {
         if let (Some(last), Source::Folder(None)) = (chain.last(), &source) {
             self.opened_here(name, last)?;
         }
+        let generation = match chain.last() {
+            None => 1,
+            Some(s) => s
+                .record
+                .generation
+                .checked_add(1)
+                .ok_or_else(|| Error::refused(Code::StaleGeneration, "The seat is at the last generation there is.", "Add the folder as a new target."))?,
+        };
         let recipients = self.recipients(&holders, extra)?;
         let dir = self.dir(name).join("bundles");
         files::private_dir(&dir).map_err(io_err("make the bundles folder"))?;
         let tmp = files::temp_beside(&dir.join("new"));
-        let file = files::create_private(&tmp).map_err(io_err("create the bundle"))?;
-        let sealed = bundle::seal(&recipients, BufWriter::new(file), |tar| {
-            let mut out = TarOut::new(tar);
-            match source {
-                Source::Folder(given) => {
-                    let path = self.path_or(name, given)?;
-                    swap::recover(&path)?;
-                    let _lock = hold(&path, &target)?;
-                    archive::capture_folder(&path, &rules, &mut out)?;
-                }
-                Source::Tar(input) => archive::capture_tar(input, &rules, &mut out)?,
-            }
-            Ok(out.finish().map_err(io_err("finish the tar"))?.1)
+        let made = self.write_bundle(&tmp, &recipients, source, name, &target, &rules, limits).and_then(|(counts, (sha256, size))| {
+            archive::restore(bundle::open(&tmp, key)?, limits, &mut NullSink)?;
+            Ok((counts, sha256, size))
         });
-        let (counts, written) = match sealed {
+        let (counts, sha256, size) = match made {
             Ok(v) => v,
             Err(e) => {
                 let _ = fs::remove_file(&tmp);
                 return Err(e);
             }
         };
-        written.out.into_inner().map_err(|e| io_err("write the bundle")(e.into_error())).and_then(|f| f.sync_all().map_err(io_err("write the bundle")))?;
-        let bundle = self.bundle_path(name, &written.sha256);
-        fs::rename(&tmp, &bundle).map_err(io_err("keep the bundle"))?;
+        fs::rename(&tmp, self.bundle_path(name, &sha256)).map_err(io_err("keep the bundle"))?;
         let last = chain.last();
-        let record = SeatRecord {
-            target: name.to_owned(),
-            generation: last.map_or(1, |s| s.record.generation + 1),
-            holder: self.me().clone(),
-            previous: last.map(|s| s.record.holder.clone()),
-            bundle: written.sha256.clone(),
-            at: files::now(),
-        };
-        let seat = SignedSeat::sign(record, &self.key)?;
+        let record = SeatRecord::new(name, generation, key.public().clone(), last.map(|s| s.record.holder.clone()), sha256.clone());
+        let seat = SignedSeat::sign(record, key)?;
         accept_seat(&holders, name, last, &seat)?;
         self.write_seat(name, &seat)?;
-        self.prune_bundles(name, Some(&written.sha256))?;
-        Ok(Sealed { target: name.to_owned(), generation: seat.record.generation, bundle: written.sha256, size: written.size, counts })
+        self.prune_bundles(name, Some(&sha256))?;
+        Ok(Sealed { target: name.to_owned(), generation, bundle: sha256, size, counts })
+    }
+
+    #[expect(clippy::too_many_arguments, reason = "each is a separate part of one seal")]
+    fn write_bundle(
+        &self,
+        tmp: &Path,
+        recipients: &[Recipient],
+        source: Source<'_>,
+        name: &str,
+        target: &Target,
+        rules: &crate::target::Rules,
+        limits: Limits,
+    ) -> Result<(Counts, (String, u64))> {
+        let file = files::create_private(tmp).map_err(io_err("create the bundle"))?;
+        let (counts, written) = bundle::seal(recipients, BufWriter::new(file), |tar| {
+            let mut out = TarOut::checked(tar, limits);
+            match source {
+                Source::Folder(given) => {
+                    let path = self.path_or(name, given)?;
+                    swap::recover(&path)?;
+                    let _lock = hold(&path, target)?;
+                    archive::capture_folder(&path, rules, &mut out)?;
+                }
+                Source::Tar(input) => archive::capture_tar(input, rules, limits, &mut out)?,
+            }
+            Ok(out.finish()?.1)
+        })?;
+        let file = written.out.into_inner().map_err(|e| io_err("write the bundle")(e.into_error()))?;
+        file.sync_all().map_err(io_err("write the bundle"))?;
+        Ok((counts, (written.sha256, written.size)))
     }
 
     /// A seat that came from another machine names a bundle the folder here
     /// does not have yet. Sealing the folder before opening would replace
     /// that bundle with whatever the folder holds.
     fn opened_here(&self, name: &str, last: &SignedSeat) -> Result<()> {
-        if last.record.previous.as_ref().unwrap_or(&last.record.holder) == self.me() {
+        if last.record.previous.as_ref().unwrap_or(&last.record.holder) == self.me()? {
             return Ok(());
         }
         let opened = fs::read_to_string(self.dir(name).join("opened")).ok().and_then(|g| g.trim().parse::<u64>().ok());
@@ -387,7 +423,9 @@ impl Home {
     /// Restores the newest bundle, into a folder or as a tar.
     pub fn open_target(&self, name: &str, dest: Dest<'_>, limits: Limits) -> Result<Opened> {
         let target = self.target(name)?;
+        let key = self.key()?;
         let holders = self.holders()?;
+        let _busy = if matches!(dest, Dest::Folder(_)) { Some(self.lock(name)?) } else { None };
         let (_, last) = self.held(name, &holders)?;
         let bundle = self.checked_bundle(name, &last)?;
         let generation = last.record.generation;
@@ -397,7 +435,7 @@ impl Home {
                 let path = self.path_or(name, given)?;
                 swap::recover(&path)?;
                 let lock = hold(&path, &target)?;
-                let counts = unpack_with(bundle::open(&bundle, &self.key)?, &path, lock, limits)?;
+                let counts = unpack_with(bundle::open(&bundle, key)?, &path, lock, limits)?;
                 if at_target {
                     write_private(&self.dir(name).join("opened"), generation.to_string().as_bytes()).map_err(io_err("note the open"))?;
                 }
@@ -405,8 +443,8 @@ impl Home {
             }
             Dest::Tar(out) => {
                 let mut tar = TarOut::new(out);
-                let counts = archive::restore(bundle::open(&bundle, &self.key)?, limits, &mut tar)?;
-                tar.finish().map_err(io_err("finish the tar"))?;
+                let counts = archive::restore(bundle::open(&bundle, key)?, limits, &mut tar)?;
+                tar.finish()?;
                 Ok(Opened { target: name.to_owned(), generation, to: None, counts })
             }
         }
@@ -434,9 +472,9 @@ impl Home {
         let holders = self.holders()?;
         let chain = self.seats(name, &holders)?;
         let last = chain.last().ok_or_else(|| Error::refused(Code::NotSealed, format!("{name} has no seat here."), format!("Run `eidolon seal {name}`.")))?;
-        let opened = if last.record.holder == *self.me() {
+        let opened = if let (Some(key), true) = (self.key.as_ref(), self.public_key() == Some(&last.record.holder)) {
             let bundle = self.checked_bundle(name, last)?;
-            Some(archive::restore(bundle::open(&bundle, &self.key)?, limits, &mut NullSink)?)
+            Some(archive::restore(bundle::open(&bundle, key)?, limits, &mut NullSink)?)
         } else {
             None
         };
@@ -456,7 +494,7 @@ impl Home {
             path: self.path_of(name)?,
             generation: last.map(|s| s.record.generation),
             holder: last.map(|s| holders.name_of(&s.record.holder)),
-            held_here: last.is_some_and(|s| s.record.holder == *self.me()),
+            held_here: last.is_some_and(|s| self.public_key() == Some(&s.record.holder)),
             pending_to: pending.map(|p| holders.name_of(&p.record.holder)),
             bundle: last.map(|s| s.record.bundle.clone()),
             bundle_size: bundle.and_then(|p| fs::metadata(p).ok()).map(|m| m.len()),
@@ -482,6 +520,19 @@ fn unpack_with(tar: impl Read, dest: &Path, lock: Option<AppLock>, limits: Limit
         sink.finish()?;
         Ok(counts)
     })
+}
+
+/// Takes an exclusive lock on `path`, or refuses with `busy`.
+pub(crate) fn lock_file(path: &Path, what: &str) -> Result<File> {
+    if let Some(parent) = path.parent() {
+        files::private_dir(parent).map_err(io_err(format!("make {}", parent.display())))?;
+    }
+    let file = OpenOptions::new().create(true).write(true).truncate(false).open(path).map_err(io_err(format!("open {}", path.display())))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => Err(Error::refused(Code::Busy, format!("Another eidolon command is working on {what}."), "Wait for it to finish, then run this again.")),
+        Err(TryLockError::Error(e)) => Err(io_err(format!("lock {}", path.display()))(e)),
+    }
 }
 
 pub(crate) fn hold(path: &Path, target: &Target) -> Result<Option<AppLock>> {

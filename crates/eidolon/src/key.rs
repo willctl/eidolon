@@ -7,8 +7,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, HashAlg, LineEnding, PrivateKey, PublicKey, SshSig};
 use std::fmt;
-use std::path::PathBuf;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use zeroize::Zeroizing;
 
 /// The SSHSIG namespace of a seat. `ssh-keygen -Y verify -n` takes it.
 pub const SEAT_NAMESPACE: &str = "eidolon-seat@willctl.com";
@@ -99,13 +101,26 @@ pub struct MachineKey {
 }
 
 impl MachineKey {
-    /// Loads the key, making one the first time.
-    pub fn load_or_create(source: &KeySource) -> Result<MachineKey> {
+    /// Loads the key if this machine has one, writing nothing.
+    pub fn load(source: &KeySource) -> Result<Option<MachineKey>> {
         let pem = match source {
-            KeySource::File(path) => file_key(path)?,
-            KeySource::Keyring => keyring_key()?,
+            KeySource::File(path) => read_file_key(path)?,
+            KeySource::Keyring => read_keyring_key()?,
         };
-        MachineKey::from_openssh(&pem)
+        pem.map(|pem| MachineKey::from_openssh(&pem)).transpose()
+    }
+
+    /// Loads the key, or makes it. True when it was made now.
+    pub fn create(source: &KeySource) -> Result<(MachineKey, bool)> {
+        if let Some(key) = MachineKey::load(source)? {
+            return Ok((key, false));
+        }
+        let key = MachineKey::generate()?;
+        match source {
+            KeySource::File(path) => write_file_key(path, &key.to_openssh())?,
+            KeySource::Keyring => keyring_entry()?.set_password(&key.to_openssh()).map_err(no_store)?,
+        }
+        Ok((key, true))
     }
 
     pub fn generate() -> Result<MachineKey> {
@@ -131,8 +146,8 @@ impl MachineKey {
         Ok(MachineKey { private, public })
     }
 
-    pub fn to_openssh(&self) -> String {
-        self.private.to_openssh(LineEnding::LF).map(|s| s.to_string()).unwrap_or_default()
+    pub fn to_openssh(&self) -> Zeroizing<String> {
+        self.private.to_openssh(LineEnding::LF).unwrap_or_default()
     }
 
     pub fn public(&self) -> &HolderKey {
@@ -150,28 +165,29 @@ impl MachineKey {
     }
 }
 
-fn file_key(path: &std::path::Path) -> Result<String> {
+fn read_file_key(path: &Path) -> Result<Option<Zeroizing<String>>> {
     match std::fs::read_to_string(path) {
         Ok(pem) => {
+            let pem = Zeroizing::new(pem);
             only_owner_reads(path)?;
-            Ok(pem)
+            Ok(Some(pem))
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let key = MachineKey::generate()?;
-            let pem = key.to_openssh();
-            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-                files::private_dir(parent).map_err(io_err("make the key file's folder"))?;
-            }
-            let mut f = files::create_private(path).map_err(io_err(format!("create the key file {}", path.display())))?;
-            std::io::Write::write_all(&mut f, pem.as_bytes()).map_err(io_err("write the key file"))?;
-            Ok(pem)
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(io_err(format!("read the key file {}", path.display()))(e)),
     }
 }
 
+/// Writes a new key file, owner-only, and syncs it and its folder.
+fn write_file_key(path: &Path, pem: &str) -> Result<()> {
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    files::private_dir(parent).map_err(io_err("make the key file's folder"))?;
+    let mut f = files::create_private(path).map_err(io_err(format!("create the key file {}", path.display())))?;
+    f.write_all(pem.as_bytes()).and_then(|()| f.sync_all()).map_err(io_err("write the key file"))?;
+    files::sync_dir(parent).map_err(io_err("sync the key file's folder"))
+}
+
 #[cfg(unix)]
-fn only_owner_reads(path: &std::path::Path) -> Result<()> {
+fn only_owner_reads(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let mode = std::fs::metadata(path).map_err(io_err("read the key file's mode"))?.permissions().mode();
     if mode & 0o077 != 0 {
@@ -181,21 +197,22 @@ fn only_owner_reads(path: &std::path::Path) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn only_owner_reads(_: &std::path::Path) -> Result<()> {
+fn only_owner_reads(_: &Path) -> Result<()> {
     Ok(())
 }
 
-fn keyring_key() -> Result<String> {
-    let no_store =
-        |e: keyring::Error| Error::refused(Code::NoKeyStore, format!("The key store did not answer: {e}."), "Pass --key-file or set EIDOLON_KEY_FILE on a machine without one.");
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(no_store)?;
-    match entry.get_password() {
-        Ok(pem) => Ok(pem),
-        Err(keyring::Error::NoEntry) => {
-            let pem = MachineKey::generate()?.to_openssh();
-            entry.set_password(&pem).map_err(no_store)?;
-            Ok(pem)
-        }
+fn no_store(e: keyring::Error) -> Error {
+    Error::refused(Code::NoKeyStore, format!("The key store did not answer: {e}."), "Pass --key-file or set EIDOLON_KEY_FILE on a machine without one.")
+}
+
+fn keyring_entry() -> Result<keyring::Entry> {
+    keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(no_store)
+}
+
+fn read_keyring_key() -> Result<Option<Zeroizing<String>>> {
+    match keyring_entry()?.get_password() {
+        Ok(pem) => Ok(Some(Zeroizing::new(pem))),
+        Err(keyring::Error::NoEntry) => Ok(None),
         Err(e) => Err(no_store(e)),
     }
 }
@@ -219,14 +236,17 @@ mod tests {
     fn a_key_file_is_made_once_and_must_be_private() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("keys/desk");
-        let first = MachineKey::load_or_create(&KeySource::File(path.clone())).unwrap();
-        let again = MachineKey::load_or_create(&KeySource::File(path.clone())).unwrap();
+        assert!(MachineKey::load(&KeySource::File(path.clone())).unwrap().is_none(), "no key yet, and none made");
+        assert!(!path.exists());
+        let (first, made) = MachineKey::create(&KeySource::File(path.clone())).unwrap();
+        let (again, made_again) = MachineKey::create(&KeySource::File(path.clone())).unwrap();
+        assert!(made && !made_again);
         assert_eq!(first.public(), again.public());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-            let err = MachineKey::load_or_create(&KeySource::File(path)).err().unwrap();
+            let err = MachineKey::load(&KeySource::File(path)).err().unwrap();
             assert_eq!(err.code(), Some(Code::KeyNotPrivate));
         }
     }

@@ -75,8 +75,9 @@ impl Machine {
         out.into()
     }
 
+    /// Makes the key if it is missing, and prints it.
     pub fn key_line(&self) -> String {
-        self.run(&["key", "show"]).ok().json()["key"].as_str().unwrap().to_owned()
+        self.run(&["key", "init"]).ok().json()["key"].as_str().unwrap().to_owned()
     }
 }
 

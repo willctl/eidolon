@@ -5,6 +5,8 @@
 use crate::error::{Code, Error, Result};
 use crate::key::{HolderKey, MachineKey, SEAT_NAMESPACE};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use ssh_key::rand_core::{OsRng, RngCore};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -17,6 +19,16 @@ pub struct SeatRecord {
     pub bundle: String,
     /// Seconds since 1970, as the signer's clock had it.
     pub at: u64,
+    /// 16 random bytes in hex, so no two seats are the same bytes.
+    pub nonce: String,
+}
+
+impl SeatRecord {
+    pub fn new(target: &str, generation: u64, holder: HolderKey, previous: Option<HolderKey>, bundle: String) -> SeatRecord {
+        let mut nonce = [0u8; 16];
+        OsRng.fill_bytes(&mut nonce);
+        SeatRecord { target: target.to_owned(), generation, holder, previous, bundle, at: crate::files::now(), nonce: crate::bundle::hex(&nonce) }
+    }
 }
 
 /// A record with the exact bytes that were signed, and the signature.
@@ -49,6 +61,11 @@ impl SignedSeat {
         &self.signature
     }
 
+    /// The SHA-256 of the signed bytes, in hex: what an ack names.
+    pub fn sha256(&self) -> String {
+        crate::bundle::hex(&Sha256::digest(&self.bytes))
+    }
+
     pub fn signed_by(&self, key: &HolderKey) -> bool {
         key.verifies(SEAT_NAMESPACE, &self.bytes, &self.signature)
     }
@@ -59,7 +76,7 @@ mod tests {
     use super::*;
 
     fn record(holder: &MachineKey) -> SeatRecord {
-        SeatRecord { target: "firefox".into(), generation: 1, holder: holder.public().clone(), previous: None, bundle: "00".repeat(32), at: 1 }
+        SeatRecord::new("firefox", 1, holder.public().clone(), None, "00".repeat(32))
     }
 
     #[test]
@@ -72,6 +89,13 @@ mod tests {
         changed.insert(0, b' ');
         let moved = SignedSeat::from_parts(changed, seat.signature().to_owned()).unwrap();
         assert!(!moved.signed_by(desk.public()), "other bytes, same record");
+    }
+
+    #[test]
+    fn two_seats_signed_alike_are_still_different_bytes() {
+        let desk = MachineKey::generate().unwrap();
+        let (a, b) = (SignedSeat::sign(record(&desk), &desk).unwrap(), SignedSeat::sign(record(&desk), &desk).unwrap());
+        assert_ne!(a.sha256(), b.sha256());
     }
 
     #[test]

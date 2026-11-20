@@ -62,12 +62,12 @@ fn a_running_app_stops_seal_and_open_and_eidolon_keeps_the_app_out() {
     let w = World::new();
     let notes = w.path("desk-notes");
     write_tree(&notes, &[("a.md", "a")]);
-    w.desk.seal("notes", Source::Folder(None), Vec::new()).unwrap();
+    w.desk.seal("notes", Source::Folder(None), Vec::new(), Limits::default()).unwrap();
     write_tree(&notes, &[("a.md", "edited while the app runs")]);
 
     let (app, held) = app_holding(&notes);
     assert!(held);
-    assert_eq!(w.desk.seal("notes", Source::Folder(None), Vec::new()).err().and_then(|e| e.code()), Some(Code::AppRunning));
+    assert_eq!(w.desk.seal("notes", Source::Folder(None), Vec::new(), Limits::default()).err().and_then(|e| e.code()), Some(Code::AppRunning));
     assert_eq!(w.desk.open_target("notes", Dest::Folder(None), Limits::default()).err().and_then(|e| e.code()), Some(Code::AppRunning));
     assert!(read_tree(&notes).contains(&("a.md".into(), "edited while the app runs".into())), "open changed nothing");
     quit(app);

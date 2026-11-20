@@ -87,6 +87,7 @@ fn the_holder_file_is_what_ssh_keygen_reads_and_seats_verify_with_it() {
 fn refusals_have_stable_codes_and_usage_mistakes_exit_2() {
     let dir = tempfile::tempdir().unwrap();
     let m = Machine::new(dir.path(), "desk");
+    m.key_line();
     assert_eq!(m.run(&["open", "nothing"]).refused(), "unknown_target");
     assert_eq!(m.run(&["target", "add", "Bad/Name"]).refused(), "bad_name");
     assert_eq!(m.run(&["holders", "add", "x", "ssh-rsa", "AAAA"]).refused(), "bad_holder");
@@ -97,6 +98,24 @@ fn refusals_have_stable_codes_and_usage_mistakes_exit_2() {
     assert_eq!(usage.status.code(), Some(2));
     let show = m.run(&["target", "show", "firefox"]).ok().json();
     assert!(show["toml"].as_str().unwrap().contains("parentlock"));
+}
+
+#[test]
+fn reads_on_a_fresh_machine_write_nothing_and_key_init_makes_the_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let m = Machine::new(dir.path(), "desk");
+    let ls = m.run(&["ls"]).ok().json();
+    assert_eq!(ls["targets"], serde_json::json!([]));
+    assert!(ls["key"].is_null());
+    assert!(m.run(&["key", "show"]).ok().json()["key"].is_null());
+    assert_eq!(m.run(&["holders", "ls"]).ok().json()["holders"], serde_json::json!([]));
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "no home, no key");
+    assert_eq!(m.run(&["receive"]).refused(), "no_key");
+    let made = m.run(&["key", "init"]).ok().json();
+    assert_eq!(made["created"], true);
+    assert_eq!(m.run(&["key", "init"]).ok().json()["created"], false);
+    assert_eq!(m.run(&["key", "show"]).ok().json()["key"], made["key"]);
+    assert_eq!(m.run(&["ls"]).ok().json()["key"], made["key"]);
 }
 
 #[cfg(unix)]

@@ -12,7 +12,7 @@ use std::io::Read;
 fn a_sealed_folder_opens_whole_without_what_its_rules_leave_out() {
     let w = World::new();
     write_tree(&w.path("desk-notes"), &[("a.md", "a"), ("deep/b.md", "b"), ("cache/x", "cached")]);
-    let sealed = w.desk.seal("notes", Source::Folder(None), Vec::new()).unwrap();
+    let sealed = w.desk.seal("notes", Source::Folder(None), Vec::new(), Limits::default()).unwrap();
     assert_eq!((sealed.generation, sealed.counts.files), (1, 2));
 
     let out = w.path("restored");
@@ -26,7 +26,7 @@ fn a_sealed_folder_opens_whole_without_what_its_rules_leave_out() {
     assert!(!w.path("desk-notes/cache").exists(), "a left-out folder does not come back");
     assert!(no_leftovers(&w.path("desk-notes")));
 
-    let again = w.desk.seal("notes", Source::Folder(None), Vec::new()).unwrap();
+    let again = w.desk.seal("notes", Source::Folder(None), Vec::new(), Limits::default()).unwrap();
     assert_eq!(again.generation, 2, "each seal is the next generation");
     assert_eq!(fs::read_dir(w.desk.root().join("targets/notes/bundles")).unwrap().count(), 1, "only the newest bundle is kept");
     assert_eq!(w.desk.verify("notes", Limits::default()).unwrap().seats_checked, 2);
@@ -37,10 +37,10 @@ fn a_bundle_is_age_zstd_tar_and_opens_with_any_holders_key_or_an_extra_recipient
     let w = World::new();
     write_tree(&w.path("desk-notes"), &[("a.md", "a")]);
     let paper = age::x25519::Identity::generate();
-    let sealed = w.desk.seal("notes", Source::Folder(None), vec![Recipient::parse(&paper.to_public().to_string()).unwrap()]).unwrap();
+    let sealed = w.desk.seal("notes", Source::Folder(None), vec![Recipient::parse(&paper.to_public().to_string()).unwrap()], Limits::default()).unwrap();
     let bundle = w.desk.root().join(format!("targets/notes/bundles/{}.age", sealed.bundle));
     assert_eq!(eidolon::sha256_of(&bundle).unwrap(), sealed.bundle);
-    let tower_key = age::ssh::Identity::from_buffer(w.tower.key().to_openssh().as_bytes(), None).unwrap();
+    let tower_key = age::ssh::Identity::from_buffer(w.tower.key().unwrap().to_openssh().as_bytes(), None).unwrap();
     for identity in [&tower_key as &dyn age::Identity, &paper] {
         let decryptor = age::Decryptor::new(fs::File::open(&bundle).unwrap()).unwrap();
         let plain = decryptor.decrypt(std::iter::once(identity)).unwrap();
@@ -60,10 +60,10 @@ fn a_bundle_is_age_zstd_tar_and_opens_with_any_holders_key_or_an_extra_recipient
 fn only_the_holder_seals_or_opens() {
     let w = World::new();
     write_tree(&w.path("desk-notes"), &[("a.md", "a")]);
-    w.desk.seal("notes", Source::Folder(None), Vec::new()).unwrap();
+    w.desk.seal("notes", Source::Folder(None), Vec::new(), Limits::default()).unwrap();
     let stranger = common::home(w.dir.path(), "stranger");
     stranger.add_target("notes", Some(eidolon::Target::parse(common::NOTES).unwrap()), Some(w.path("desk-notes"))).unwrap();
-    assert_eq!(stranger.seal("notes", Source::Folder(None), Vec::new()).err().and_then(|e| e.code()), Some(Code::NotAHolder));
+    assert_eq!(stranger.seal("notes", Source::Folder(None), Vec::new(), Limits::default()).err().and_then(|e| e.code()), Some(Code::NotAHolder));
     assert_eq!(w.desk.open_target("unknown", Dest::Folder(None), Limits::default()).err().and_then(|e| e.code()), Some(Code::UnknownTarget));
     assert_eq!(w.tower.open_target("notes", Dest::Folder(None), Limits::default()).err().and_then(|e| e.code()), Some(Code::NotSealed));
 }
@@ -72,7 +72,7 @@ fn only_the_holder_seals_or_opens() {
 fn a_changed_bundle_does_not_open() {
     let w = World::new();
     write_tree(&w.path("desk-notes"), &[("a.md", "a")]);
-    let sealed = w.desk.seal("notes", Source::Folder(None), Vec::new()).unwrap();
+    let sealed = w.desk.seal("notes", Source::Folder(None), Vec::new(), Limits::default()).unwrap();
     let bundle = w.desk.root().join(format!("targets/notes/bundles/{}.age", sealed.bundle));
     let mut bytes = fs::read(&bundle).unwrap();
     let last = bytes.len() - 1;
@@ -95,7 +95,7 @@ fn a_tar_from_elsewhere_is_filtered_and_cleaned_and_open_can_write_one() {
         input.append_data(&mut h, path, &b"x"[..]).unwrap();
     }
     let input = input.into_inner().unwrap();
-    let sealed = w.desk.seal("notes", Source::Tar(&mut &input[..]), Vec::new()).unwrap();
+    let sealed = w.desk.seal("notes", Source::Tar(&mut &input[..]), Vec::new(), Limits::default()).unwrap();
     assert_eq!(sealed.counts.files, 2);
     let mut out = Vec::new();
     w.desk.open_target("notes", Dest::Tar(&mut out), Limits::default()).unwrap();
@@ -127,5 +127,51 @@ fn a_path_alone_makes_a_target_of_the_whole_folder() {
     let w = World::new();
     write_tree(&w.path("plain"), &[("a", "a"), ("cache/b", "b")]);
     w.desk.add_target("plain", None, Some(w.path("plain"))).unwrap();
-    assert_eq!(w.desk.seal("plain", Source::Folder(None), Vec::new()).unwrap().counts.files, 2);
+    assert_eq!(w.desk.seal("plain", Source::Folder(None), Vec::new(), Limits::default()).unwrap().counts.files, 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn seal_refuses_what_open_would_refuse_and_keeps_the_last_good_bundle() {
+    let w = World::new();
+    write_tree(&w.path("desk-notes"), &[("a.md", "a")]);
+    w.desk.seal("notes", Source::Folder(None), Vec::new(), Limits::default()).unwrap();
+    std::os::unix::fs::symlink("/etc", w.path("desk-notes").join("etc")).unwrap();
+    assert_eq!(w.desk.seal("notes", Source::Folder(None), Vec::new(), Limits::default()).err().and_then(|e| e.code()), Some(Code::UnsafeEntry));
+    let mut twins = tar::Builder::new(Vec::new());
+    for body in [&b"1"[..], b"2"] {
+        let mut h = tar::Header::new_gnu();
+        h.set_size(1);
+        h.set_mode(0o644);
+        twins.append_data(&mut h, "d", body).unwrap();
+    }
+    let twins = twins.into_inner().unwrap();
+    assert_eq!(w.desk.seal("notes", Source::Tar(&mut &twins[..]), Vec::new(), Limits::default()).err().and_then(|e| e.code()), Some(Code::UnsafeEntry));
+    assert_eq!(
+        w.desk.seal("notes", Source::Tar(&mut &twins[..]), Vec::new(), Limits { max_bytes: 1 << 20, max_entries: 1 }).err().and_then(|e| e.code()),
+        Some(Code::TooLarge),
+        "a tar given to seal has the same limits as a restore"
+    );
+    assert_eq!(fs::read_dir(w.desk.root().join("targets/notes/bundles")).unwrap().count(), 1);
+    assert_eq!(w.desk.status("notes").unwrap().generation, Some(1));
+    fs::remove_file(w.path("desk-notes").join("etc")).unwrap();
+    w.desk.open_target("notes", Dest::Folder(Some(w.path("check"))), Limits::default()).unwrap();
+    assert_eq!(read_tree(&w.path("check")), vec![("a.md".into(), "a".into())]);
+}
+
+#[test]
+fn a_machine_without_a_key_reads_without_writing_and_is_refused_where_it_needs_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = eidolon::KeySource::File(dir.path().join("desk.key"));
+    let home = eidolon::Home::open(dir.path().join("home"), &key).unwrap();
+    assert!(home.public_key().is_none());
+    assert!(home.ls().unwrap().is_empty());
+    assert!(home.holders().unwrap().iter().next().is_none());
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0, "nothing was written");
+    home.add_target("notes", None, Some(dir.path().join("notes"))).unwrap();
+    write_tree(&dir.path().join("notes"), &[("a", "a")]);
+    assert_eq!(home.seal("notes", Source::Folder(None), Vec::new(), Limits::default()).err().and_then(|e| e.code()), Some(Code::NoKey));
+    let (made, created) = eidolon::MachineKey::create(&key).unwrap();
+    assert!(created);
+    assert_eq!(eidolon::Home::open(dir.path().join("home"), &key).unwrap().public_key(), Some(made.public()));
 }

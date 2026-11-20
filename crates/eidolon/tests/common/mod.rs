@@ -1,6 +1,6 @@
 #![allow(dead_code, clippy::unwrap_used, reason = "test helpers, each test file uses part of them; a failure should say where")]
 
-use eidolon::{Home, KeySource, Target};
+use eidolon::{Home, KeySource, MachineKey, Target};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -13,12 +13,14 @@ pub struct World {
 }
 
 pub fn home(root: &Path, name: &str) -> Home {
-    Home::open(root.join(name), &KeySource::File(root.join(format!("{name}.key")))).unwrap()
+    let key = KeySource::File(root.join(format!("{name}.key")));
+    MachineKey::create(&key).unwrap();
+    Home::open(root.join(name), &key).unwrap()
 }
 
 pub fn list(machines: &[(&str, &Home)], on: &Home) {
     for (name, m) in machines {
-        on.add_holder(name, m.key().public().clone()).unwrap();
+        on.add_holder(name, m.key().unwrap().public().clone()).unwrap();
     }
 }
 

@@ -2,7 +2,7 @@
 //! a refusal or a failure, 2 is a mistake in how the command was typed.
 
 use clap::{Args, Parser, Subcommand};
-use eidolon::{Code, Dest, Error, Home, KeySource, Limits, Recipient, Settled, Source, Target};
+use eidolon::{Code, Dest, Error, HolderKey, Home, KeySource, Limits, MachineKey, Recipient, Settled, Source, Target};
 use serde_json::{json, Value};
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
@@ -48,6 +48,8 @@ enum Cmd {
         /// Also encrypt to this age recipient, for recovery. Repeatable.
         #[arg(short, long = "recipient", value_name = "RECIPIENT")]
         recipients: Vec<String>,
+        #[command(flatten)]
+        limits: LimitArgs,
     },
     /// Restore the newest bundle, replacing the folder whole.
     Open {
@@ -107,7 +109,7 @@ enum Cmd {
 
 #[derive(Args, Clone, Copy)]
 struct LimitArgs {
-    /// The most a bundle may unpack to, such as 16G or 500M.
+    /// The most a bundle may hold, unpacked, such as 16G or 500M.
     #[arg(long, value_name = "SIZE", value_parser = size, default_value = "16G")]
     max_size: u64,
 }
@@ -128,7 +130,9 @@ fn size(text: &str) -> Result<u64, String> {
 
 #[derive(Subcommand)]
 enum KeyCmd {
-    /// Print the public key, making the key the first time.
+    /// Make this machine's key, unless it has one.
+    Init,
+    /// Print the public key, or say there is none yet. Writes nothing.
     Show,
 }
 
@@ -218,9 +222,16 @@ fn run(cli: Cli) -> eidolon::Result<()> {
     let out = Out { json: cli.json, to_stderr: stdout_is_data };
     let home = Home::open(home_dir(&cli)?, &key)?;
     match cli.command {
+        Cmd::Key(KeyCmd::Init) => {
+            let (made, created) = MachineKey::create(&key)?;
+            let line = made.public().line();
+            let text = if created { format!("Made this machine's key:\n{line}") } else { line.clone() };
+            out.show(json!({ "key": line, "created": created }), &text)
+        }
         Cmd::Key(KeyCmd::Show) => {
-            let line = home.key().public().line();
-            out.show(json!({ "key": line, "seat_namespace": eidolon::SEAT_NAMESPACE, "ack_namespace": eidolon::ACK_NAMESPACE }), &line)
+            let line = home.public_key().map(HolderKey::line);
+            let text = line.clone().unwrap_or_else(|| "This machine has no key yet. Run `eidolon key init` to make it.".to_owned());
+            out.show(json!({ "key": line, "seat_namespace": eidolon::SEAT_NAMESPACE, "ack_namespace": eidolon::ACK_NAMESPACE }), &text)
         }
         Cmd::Holders(HoldersCmd::Add { name, key }) => {
             let added = home.add_holder(&name, key.join(" ").parse()?)?;
@@ -228,9 +239,9 @@ fn run(cli: Cli) -> eidolon::Result<()> {
         }
         Cmd::Holders(HoldersCmd::Ls) => {
             let holders = home.holders()?;
-            let me = home.key().public();
-            let rows: Vec<Value> = holders.iter().map(|h| json!({ "name": h.name, "key": h.key, "this_machine": h.key == *me })).collect();
-            let text = holders.iter().map(|h| format!("{}{} {}\n", h.name, if h.key == *me { " (this machine)" } else { "" }, h.key)).collect::<Vec<_>>().concat();
+            let me = home.public_key();
+            let rows: Vec<Value> = holders.iter().map(|h| json!({ "name": h.name, "key": h.key, "this_machine": Some(&h.key) == me })).collect();
+            let text = holders.iter().map(|h| format!("{}{} {}\n", h.name, if Some(&h.key) == me { " (this machine)" } else { "" }, h.key)).collect::<Vec<_>>().concat();
             out.show(json!({ "holders": rows }), if text.is_empty() { "No holders yet. Add each machine, this one too, with `eidolon holders add`." } else { &text })
         }
         Cmd::Target(TargetCmd::Add { name, preset, file, path }) => {
@@ -257,7 +268,7 @@ fn run(cli: Cli) -> eidolon::Result<()> {
                 None => Err(e),
             },
         },
-        Cmd::Seal { target, from, from_tar, recipients } => {
+        Cmd::Seal { target, from, from_tar, recipients, limits } => {
             let extra = recipients.iter().map(|r| Recipient::parse(r)).collect::<eidolon::Result<Vec<_>>>()?;
             let mut stdin = io::stdin().lock();
             let source = match from_tar.as_deref() {
@@ -265,7 +276,7 @@ fn run(cli: Cli) -> eidolon::Result<()> {
                 Some(other) => return Err(Error::refused(Code::NoPath, format!("--from-tar takes `-`, not {other:?}."), "Pipe the tar in on standard input.")),
                 None => Source::Folder(from),
             };
-            let sealed = home.seal(&target, source, extra)?;
+            let sealed = home.seal(&target, source, extra, limits.limits())?;
             let c = sealed.counts;
             let text = format!("Sealed {target} generation {}: {} files, {} bytes, bundle {} bytes.", sealed.generation, c.files, c.bytes, sealed.size);
             out.show(json!(sealed), &text)
@@ -279,9 +290,11 @@ fn run(cli: Cli) -> eidolon::Result<()> {
             out.show(json!(opened), &format!("Opened {target} generation {} to {place}: {} files.", opened.generation, opened.counts.files))
         }
         Cmd::Send { target, to, out: Some(file), clear: _, command: _ } => {
-            home.start_move(&target, &to)?;
             let f = std::fs::File::create(&file).map_err(|e| Error::Io { doing: format!("create {}", file.display()), source: e })?;
-            home.write_offer(&target, io::BufWriter::new(f))?;
+            if let Err(e) = home.offer(&target, &to, io::BufWriter::new(f)) {
+                let _ = std::fs::remove_file(&file);
+                return Err(e);
+            }
             let text = format!("Wrote the offer to {}. On {to}: `eidolon receive < offer > ack`; then here: `eidolon settle {target} --confirm ack`.", file.display());
             out.show(json!({ "target": target, "to": to, "offer": file, "pending": true }), &text)
         }
@@ -289,19 +302,25 @@ fn run(cli: Cli) -> eidolon::Result<()> {
             let (program, args) = command.split_first().ok_or_else(|| {
                 Error::refused(Code::NoPath, "Send needs a command after `--`, or --out.", format!("Run `eidolon send {target} --to {to} -- ssh {to} eidolon receive`."))
             })?;
-            home.start_move(&target, &to)?;
-            let mut child = Command::new(program)
-                .args(args)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
-                .spawn()
-                .map_err(|e| Error::Io { doing: format!("run {}", program.to_string_lossy()), source: e })?;
-            let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
-                return Err(Error::refused(Code::BadAck, "The command's stdin and stdout were not piped.", "Run it again."));
-            };
-            let sent = home.send(&target, &to, clear, stdin, stdout);
-            let _ = child.wait();
+            let mut child = None;
+            let sent = home.send(&target, &to, clear, || {
+                let spawned = child.insert(
+                    Command::new(program)
+                        .args(args)
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::inherit())
+                        .spawn()
+                        .map_err(|e| Error::Io { doing: format!("run {}", program.to_string_lossy()), source: e })?,
+                );
+                match (spawned.stdin.take(), spawned.stdout.take()) {
+                    (Some(stdin), Some(stdout)) => Ok((stdin, stdout)),
+                    _ => Err(Error::refused(Code::BadAck, "The command's stdin and stdout were not piped.", "Run it again.")),
+                }
+            });
+            if let Some(mut child) = child {
+                let _ = child.wait();
+            }
             let moved = sent?;
             let text = format!("Moved {target} to {} (generation {}){}.", moved.to, moved.generation, if moved.cleared { "; this machine's copy is removed" } else { "" });
             out.show(json!(moved), &text)
@@ -342,7 +361,10 @@ fn run(cli: Cli) -> eidolon::Result<()> {
                 })
                 .collect::<Vec<_>>()
                 .concat();
-            out.show(json!({ "targets": rows }), if text.is_empty() { "No targets yet. Add one with `eidolon target add firefox --path <profile>`." } else { &text })
+            out.show(
+                json!({ "targets": rows, "key": home.public_key().map(HolderKey::line) }),
+                if text.is_empty() { "No targets yet. Add one with `eidolon target add firefox --path <profile>`." } else { &text },
+            )
         }
         Cmd::Verify { target, limits } => {
             let v = home.verify(&target, limits.limits())?;

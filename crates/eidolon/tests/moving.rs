@@ -12,7 +12,7 @@ use std::io::{pipe, Read, Write};
 fn sealed() -> World {
     let w = World::new();
     write_tree(&w.path("desk-notes"), &[("a.md", "a"), ("deep/b.md", "b")]);
-    w.desk.seal("notes", Source::Folder(None), Vec::new()).unwrap();
+    w.desk.seal("notes", Source::Folder(None), Vec::new(), Limits::default()).unwrap();
     w
 }
 
@@ -22,7 +22,7 @@ fn send(from: &Home, to_name: &str, to: &Home, clear: bool) -> (eidolon::Result<
     let (ack_r, ack_w) = pipe().unwrap();
     std::thread::scope(|s| {
         let receiver = s.spawn(move || to.receive(offer_r, ack_w, Limits::default()));
-        let sent = from.send("notes", to_name, clear, offer_w, ack_r);
+        let sent = from.send("notes", to_name, clear, || Ok((offer_w, ack_r)));
         (sent, receiver.join().unwrap())
     })
 }
@@ -52,14 +52,14 @@ fn a_move_hands_the_seat_over_and_back() {
     let (sent, received) = (sent.unwrap(), received.unwrap());
     assert_eq!((sent.generation, received.generation, received.from.as_str(), received.again), (2, 2, "desk", false));
     assert!(holds(&w.tower) && !holds(&w.desk));
-    assert_eq!(code(w.tower.seal("notes", Source::Folder(None), Vec::new())), Some(Code::NotOpened), "sealing before opening would replace what arrived");
+    assert_eq!(code(w.tower.seal("notes", Source::Folder(None), Vec::new(), Limits::default())), Some(Code::NotOpened), "sealing before opening would replace what arrived");
     assert_eq!(opens(&w.tower), None);
     assert_eq!(read_tree(&w.path("tower-notes")), vec![("a.md".into(), "a".into()), ("deep/b.md".into(), "b".into())]);
     assert_eq!(opens(&w.desk), Some(Code::NotTheHolder));
-    assert_eq!(code(w.desk.seal("notes", Source::Folder(None), Vec::new())), Some(Code::NotTheHolder));
+    assert_eq!(code(w.desk.seal("notes", Source::Folder(None), Vec::new(), Limits::default())), Some(Code::NotTheHolder));
 
     write_tree(&w.path("tower-notes"), &[("c.md", "made on tower")]);
-    w.tower.seal("notes", Source::Folder(None), Vec::new()).unwrap();
+    w.tower.seal("notes", Source::Folder(None), Vec::new(), Limits::default()).unwrap();
     let (sent, received) = send(&w.tower, "desk", &w.desk, true);
     assert_eq!(sent.unwrap().generation, 4);
     assert!(received.unwrap().generation == 4 && holds(&w.desk));
@@ -75,7 +75,7 @@ fn killed_after_pending_is_written_the_sender_stays_closed_and_the_same_send_fin
     let w = sealed();
     w.desk.start_move("notes", "tower").unwrap();
     assert_eq!(opens(&w.desk), Some(Code::MovePending));
-    assert_eq!(code(w.desk.seal("notes", Source::Folder(None), Vec::new())), Some(Code::MovePending));
+    assert_eq!(code(w.desk.seal("notes", Source::Folder(None), Vec::new(), Limits::default())), Some(Code::MovePending));
     assert_eq!(code(w.desk.start_move("notes", "lab")), Some(Code::UnknownHolder));
     let (sent, _) = send(&w.desk, "tower", &w.tower, false);
     assert_eq!(sent.unwrap().generation, 2);
@@ -127,11 +127,11 @@ fn an_ack_not_signed_by_the_receiver_or_for_another_move_settles_nothing() {
     w.tower.receive(&offer(&w.desk)[..], &mut ack, Limits::default()).unwrap();
     let mut value: serde_json::Value = serde_json::from_slice(&ack).unwrap();
     let statement = value["statement"].as_str().unwrap().to_owned();
-    value["signature"] = w.desk.key().sign(eidolon::ACK_NAMESPACE, statement.as_bytes()).unwrap().into();
+    value["signature"] = w.desk.key().unwrap().sign(eidolon::ACK_NAMESPACE, statement.as_bytes()).unwrap().into();
     assert_eq!(code(w.desk.settle_with_ack("notes", &serde_json::to_vec(&value).unwrap(), false)), Some(Code::BadAck), "signed by the sender itself");
     let other = statement.replace("\"generation\":2", "\"generation\":3");
     value["statement"] = other.clone().into();
-    value["signature"] = w.tower.key().sign(eidolon::ACK_NAMESPACE, other.as_bytes()).unwrap().into();
+    value["signature"] = w.tower.key().unwrap().sign(eidolon::ACK_NAMESPACE, other.as_bytes()).unwrap().into();
     assert_eq!(code(w.desk.settle_with_ack("notes", &serde_json::to_vec(&value).unwrap(), false)), Some(Code::BadAck), "for another generation");
     assert_eq!(opens(&w.desk), Some(Code::MovePending));
 }
@@ -140,7 +140,7 @@ fn an_ack_not_signed_by_the_receiver_or_for_another_move_settles_nothing() {
 fn a_signed_refusal_clears_the_pending_move_and_the_seat_stays() {
     let w = sealed();
     let lab = home(w.dir.path(), "lab");
-    w.tower.add_holder("lab", lab.key().public().clone()).unwrap();
+    w.tower.add_holder("lab", lab.key().unwrap().public().clone()).unwrap();
     let (sent, received) = send(&w.desk, "tower", &w.tower, false);
     assert_eq!(code(sent), Some(Code::HoldersDiffer));
     assert_eq!(code(received), Some(Code::HoldersDiffer));
@@ -162,7 +162,7 @@ fn a_stale_replayed_or_forged_offer_is_refused() {
     let w = sealed();
     let lab = home(w.dir.path(), "lab");
     for m in [&w.desk, &w.tower] {
-        m.add_holder("lab", lab.key().public().clone()).unwrap();
+        m.add_holder("lab", lab.key().unwrap().public().clone()).unwrap();
     }
     list(&[("desk", &w.desk), ("tower", &w.tower), ("lab", &lab)], &lab);
     lab.add_target("notes", Some(eidolon::Target::parse(common::NOTES).unwrap()), Some(w.path("lab-notes"))).unwrap();
@@ -171,16 +171,19 @@ fn a_stale_replayed_or_forged_offer_is_refused() {
     let first = offer(&w.desk);
     send(&w.desk, "tower", &w.tower, false).0.unwrap();
     assert_eq!(opens(&w.tower), None);
-    w.tower.seal("notes", Source::Folder(None), Vec::new()).unwrap();
+    w.tower.seal("notes", Source::Folder(None), Vec::new(), Limits::default()).unwrap();
     send(&w.tower, "desk", &w.desk, false).0.unwrap();
     let mut ack = Vec::new();
-    assert_eq!(code(w.tower.receive(&first[..], &mut ack, Limits::default())), Some(Code::StaleGeneration), "a replay of an old offer");
+    assert!(w.tower.receive(&first[..], &mut ack, Limits::default()).unwrap().again, "a replay of a seat already taken is only acked again");
+    assert!(holds(&w.desk) && !holds(&w.tower), "and changes nothing");
+    assert_eq!(code(w.desk.settle_with_ack("notes", &ack, false)), Some(Code::NoPending));
 
     write_tree(&w.path("lab-notes"), &[("x", "lab's own")]);
-    lab.seal("notes", Source::Folder(None), Vec::new()).unwrap();
+    lab.seal("notes", Source::Folder(None), Vec::new(), Limits::default()).unwrap();
     lab.start_move("notes", "tower").unwrap();
     let mut ack = Vec::new();
-    assert_eq!(code(w.tower.receive(&offer(&lab)[..], &mut ack, Limits::default())), Some(Code::StaleGeneration), "another, shorter history from generation 1");
+    assert_eq!(code(w.tower.receive(&offer(&lab)[..], &mut ack, Limits::default())), Some(Code::Ahead), "another, shorter history from generation 1");
+    assert!(serde_json::from_slice::<serde_json::Value>(&ack).unwrap()["statement"].is_null(), "and the refusal is not signed, so no pending move is dropped on it");
 
     let mut forged = Vec::new();
     w.desk.start_move("notes", "tower").unwrap();
@@ -194,7 +197,7 @@ fn a_stale_replayed_or_forged_offer_is_refused() {
         entry.read_to_end(&mut body).unwrap();
         if path == "seats/5.json.sig" {
             let record: SeatRecord = serde_json::from_slice(&std::fs::read(w.desk.root().join("targets/notes/pending/next.json")).unwrap()).unwrap();
-            body = SignedSeat::sign(record, lab.key()).unwrap().signature().as_bytes().to_vec();
+            body = SignedSeat::sign(record, lab.key().unwrap()).unwrap().signature().as_bytes().to_vec();
         }
         let mut h = tar::Header::new_gnu();
         h.set_size(body.len() as u64);
@@ -219,19 +222,19 @@ fn a_bundle_with_an_unsafe_entry_is_refused_before_the_receiver_keeps_anything()
     tar.extend_from_slice(&[b'x'; 512]);
     tar.extend_from_slice(&[0; 1024]);
     let mut bad = Vec::new();
-    let recipients = [w.tower.key().public().recipient().unwrap()];
+    let recipients = [w.tower.key().unwrap().public().recipient().unwrap()];
     let encryptor = age::Encryptor::with_recipients(recipients.iter().map(|r| r as &dyn age::Recipient)).unwrap();
     let mut writer = encryptor.wrap_output(&mut bad).unwrap();
     writer.write_all(&zstd::encode_all(&tar[..], 3).unwrap()).unwrap();
     writer.finish().unwrap();
     let sha = eidolon::hex(&<sha2::Sha256 as sha2::Digest>::digest(&bad));
 
-    let next = SeatRecord { target: "notes".into(), generation: 2, holder: w.tower.key().public().clone(), previous: Some(w.desk.key().public().clone()), bundle: sha, at: 0 };
+    let next = SeatRecord::new("notes", 2, w.tower.key().unwrap().public().clone(), Some(w.desk.key().unwrap().public().clone()), sha);
     let seats = [
         std::fs::read(w.desk.root().join("targets/notes/seats/00000000000000000001.json")).unwrap(),
         std::fs::read(w.desk.root().join("targets/notes/seats/00000000000000000001.json.sig")).unwrap(),
     ];
-    let next = SignedSeat::sign(next, w.desk.key()).unwrap();
+    let next = SignedSeat::sign(next, w.desk.key().unwrap()).unwrap();
     let mut offer = tar::Builder::new(Vec::new());
     let mut put = |path: &str, body: &[u8]| {
         let mut h = tar::Header::new_gnu();
@@ -250,4 +253,75 @@ fn a_bundle_with_an_unsafe_entry_is_refused_before_the_receiver_keeps_anything()
     let mut ack = Vec::new();
     assert_eq!(code(w.tower.receive(&offer[..], &mut ack, Limits::default())), Some(Code::UnsafeEntry));
     assert!(!holds(&w.tower) && w.tower.status("notes").unwrap().generation.is_none());
+}
+
+#[test]
+fn a_resend_after_the_receiver_moved_on_settles_the_move_and_leaves_one_holder() {
+    let w = sealed();
+    w.desk.start_move("notes", "tower").unwrap();
+    let mut lost = Vec::new();
+    w.tower.receive(&offer(&w.desk)[..], &mut lost, Limits::default()).unwrap();
+    assert_eq!(opens(&w.tower), None);
+    w.tower.seal("notes", Source::Folder(None), Vec::new(), Limits::default()).unwrap();
+    let (sent, received) = send(&w.desk, "tower", &w.tower, false);
+    assert_eq!(sent.unwrap().generation, 2, "the receiver acks the seat it took, though it has moved on");
+    assert!(received.unwrap().again);
+    assert!(!holds(&w.desk) && holds(&w.tower));
+    assert_eq!(w.tower.status("notes").unwrap().generation, Some(3));
+}
+
+#[test]
+fn an_old_refusal_does_not_settle_a_later_move() {
+    let w = sealed();
+    w.desk.start_move("notes", "tower").unwrap();
+    let mut old = Vec::new();
+    let _ = w.tower.receive(&offer(&w.desk)[..], &mut old, Limits { max_bytes: 1 << 30, max_entries: 1 });
+    assert!(matches!(w.desk.settle_with_ack("notes", &old, false).unwrap(), Settled::Refused(_)));
+    w.desk.start_move("notes", "tower").unwrap();
+    let mut lost = Vec::new();
+    w.tower.receive(&offer(&w.desk)[..], &mut lost, Limits::default()).unwrap();
+    assert_eq!(code(w.desk.settle_with_ack("notes", &old, false)), Some(Code::BadAck), "the old refusal names another seat");
+    assert_eq!(opens(&w.desk), Some(Code::MovePending));
+    assert!(matches!(w.desk.settle_with_ack("notes", &lost, false).unwrap(), Settled::Moved(_)));
+    assert!(!holds(&w.desk) && holds(&w.tower));
+}
+
+#[test]
+fn a_receiver_failing_after_it_started_writing_does_not_sign_a_refusal() {
+    let w = sealed();
+    w.desk.start_move("notes", "tower").unwrap();
+    let in_the_way = w.tower.root().join("targets/notes/bundles");
+    std::fs::create_dir_all(in_the_way.parent().unwrap()).unwrap();
+    std::fs::write(&in_the_way, "a file where the bundles folder goes").unwrap();
+    let mut ack = Vec::new();
+    assert!(w.tower.receive(&offer(&w.desk)[..], &mut ack, Limits::default()).is_err());
+    assert!(w.tower.root().join("targets/notes/target.toml").exists(), "it had started writing");
+    assert!(serde_json::from_slice::<serde_json::Value>(&ack).unwrap()["statement"].is_null(), "unsigned, so the sender keeps the move pending");
+    assert_eq!(code(w.desk.settle_with_ack("notes", &ack, false)), Some(Code::BadAck));
+    std::fs::remove_file(&in_the_way).unwrap();
+    let (sent, _) = send(&w.desk, "tower", &w.tower, false);
+    assert!(sent.is_ok() && holds(&w.tower));
+}
+
+#[test]
+fn a_second_command_on_the_same_target_is_refused_as_busy() {
+    let w = sealed();
+    let lock = std::fs::File::open(w.desk.root().join("targets/notes/lock")).unwrap();
+    lock.try_lock().unwrap();
+    assert_eq!(code(w.desk.seal("notes", Source::Folder(None), Vec::new(), Limits::default())), Some(Code::Busy));
+    assert_eq!(code(w.desk.start_move("notes", "tower")), Some(Code::Busy));
+    assert_eq!(opens(&w.desk), Some(Code::Busy));
+    let receiving = std::fs::File::create(w.tower.root().join("receive.lock")).unwrap();
+    receiving.try_lock().unwrap();
+    assert_eq!(code(w.tower.receive(&b""[..], Vec::new(), Limits::default())), Some(Code::Busy));
+    drop((lock, receiving));
+    assert_eq!(opens(&w.desk), None);
+}
+
+#[test]
+fn a_pending_move_without_seats_is_refused_not_a_panic() {
+    let w = sealed();
+    w.desk.start_move("notes", "tower").unwrap();
+    std::fs::remove_dir_all(w.desk.root().join("targets/notes/seats")).unwrap();
+    assert!(w.desk.write_offer("notes", Vec::new()).is_err());
 }

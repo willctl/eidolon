@@ -23,11 +23,14 @@ pub fn accept_seat(holders: &Holders, target: &str, current: Option<&SignedSeat>
     if n.target != target || current.is_some_and(|c| c.record.target != n.target) {
         return Err(Refusal::new(Code::StaleGeneration, format!("That seat is for {:?}, not {target:?}.", n.target), "Ask the sender for this target's seat."));
     }
-    let want = current.map_or(1, |c| c.record.generation.saturating_add(1));
-    if n.generation != want || (current.is_some() && want == 1) {
+    let want = match current {
+        None => Some(1),
+        Some(c) => c.record.generation.checked_add(1),
+    };
+    if Some(n.generation) != want {
         return Err(Refusal::new(
             Code::StaleGeneration,
-            format!("That seat is generation {} and this one needs {want}.", n.generation),
+            format!("That seat is generation {} and this one needs {}.", n.generation, want.map_or_else(|| "one past the last".to_owned(), |w| w.to_string())),
             "Ask the sender to start the move again from the current seat.",
         ));
     }
@@ -107,8 +110,7 @@ mod tests {
     }
 
     fn seat(target: &str, generation: u64, holder: &MachineKey, previous: Option<&MachineKey>, signed_by: &MachineKey) -> SignedSeat {
-        let record =
-            SeatRecord { target: target.into(), generation, holder: holder.public().clone(), previous: previous.map(|p| p.public().clone()), bundle: "ab".repeat(32), at: 1 };
+        let record = SeatRecord::new(target, generation, holder.public().clone(), previous.map(|p| p.public().clone()), "ab".repeat(32));
         SignedSeat::sign(record, signed_by).unwrap()
     }
 
@@ -231,6 +233,15 @@ mod tests {
             let (desk, tower) = (machine(1), machine(2));
             let holders = list(&[&desk, &tower]);
             let cur = seat(T, cur_gen, &desk, None, &desk);
+            let next = seat(T, next_gen, &tower, Some(&desk), &desk);
+            prop_assert_eq!(code(accept_seat(&holders, T, Some(&cur), &next)), Some(Code::StaleGeneration));
+        }
+
+        #[test]
+        fn nothing_follows_the_last_generation(next_gen in any::<u64>()) {
+            let (desk, tower) = (machine(1), machine(2));
+            let holders = list(&[&desk, &tower]);
+            let cur = seat(T, u64::MAX, &desk, None, &desk);
             let next = seat(T, next_gen, &tower, Some(&desk), &desk);
             prop_assert_eq!(code(accept_seat(&holders, T, Some(&cur), &next)), Some(Code::StaleGeneration));
         }

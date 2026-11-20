@@ -119,8 +119,11 @@ fn a_bomb_stops_at_the_limit() {
         many = many.file(&format!("f{i}"), "");
     }
     assert_eq!(refused(&many.done(), small()), Some(Code::TooLarge), "too many entries");
-    let pax = vec![b'x'; 3 << 20];
-    assert_eq!(refused(&Raw::new().add("pax", EntryType::XHeader, 0o644, &pax, None).file("a", "x").done(), small()), Some(Code::TooLarge), "a huge PAX header");
+    let pax = vec![b'x'; 65 << 10];
+    let extension = |kind| refused(&Raw::new().add("ext", kind, 0o644, &pax, None).file("a", "x").done(), Limits::default());
+    for kind in [EntryType::XHeader, EntryType::XGlobalHeader, EntryType::GNULongName, EntryType::GNULongLink] {
+        assert_eq!(extension(kind), Some(Code::UnsafeEntry), "an extension header over 64 KiB is refused before it is read: {kind:?}");
+    }
     let zeros = zstd::encode_all(&Raw::new().add("zeros", EntryType::Regular, 0o644, &vec![0u8; 8 << 20], None).done()[..], 19).unwrap();
     assert!(zeros.len() < 4096, "the bomb is small: {}", zeros.len());
     let dir = tempfile::tempdir().unwrap();
@@ -162,4 +165,27 @@ fn a_clean_tar_replaces_the_folder_with_its_modes_times_and_inside_links() {
         assert_eq!(meta.mtime(), 1_700_000_000);
         assert_eq!(std::fs::metadata(dest.join("sub")).unwrap().permissions().mode() & 0o777, 0o750);
     }
+}
+
+#[test]
+fn links_that_chain_through_other_links_are_refused() {
+    let cases =
+        [Raw::new().link("a/b/l", "../..").link("x", "a/b/l/..").done(), Raw::new().link("x", "a/..").link("a", ".").done(), Raw::new().file("d/f", "x").link("d", ".").done()];
+    for (i, tar) in cases.iter().enumerate() {
+        assert_eq!(refused(tar, Limits::default()), Some(Code::UnsafeEntry), "case {i}");
+    }
+}
+
+#[test]
+fn a_huge_modification_time_restores_without_a_panic() {
+    let mut tar = Raw::new().file("f", "hi").done();
+    let mut h = Header::from_byte_slice(&tar[..512]).clone();
+    let mut mtime = [0xffu8; 12];
+    mtime[0] = 0x80;
+    h.as_old_mut().mtime = mtime;
+    h.set_cksum();
+    tar[..512].copy_from_slice(h.as_bytes());
+    let dir = tempfile::tempdir().unwrap();
+    let counts = unpack(&tar[..], &dir.path().join("p"), Limits::default()).unwrap();
+    assert_eq!(counts.files, 1);
 }

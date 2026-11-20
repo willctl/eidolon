@@ -5,7 +5,7 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.3.0"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.89"
 license = "MIT"
 authors = ["willctl"]
 repository = "https://github.com/willctl/eidolon"
@@ -35,6 +35,8 @@ ssh-key = { version = "0.6.7", default-features = false, features = ["std", "ed2
 tar = { version = "0.4.46", default-features = false }
 # Targets are TOML.
 toml = { version = "1", default-features = false, features = ["parse", "display", "serde", "std"] }
+# Wipes the machine key's text from memory when it is dropped.
+zeroize = "1"
 # The bundle's compression.
 zstd = { version = "0.14", default-features = false }
 proptest = { version = "1", default-features = false, features = ["std"] }

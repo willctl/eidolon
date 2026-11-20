@@ -4,13 +4,28 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Makes `path` and any folder above it that is missing, each owner-only.
 pub(crate) fn private_dir(path: &Path) -> io::Result<()> {
-    fs::create_dir_all(path)?;
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        builder.mode(0o700);
+        builder.create(path)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
     }
+    #[cfg(not(unix))]
+    builder.create(path)
+}
+
+#[cfg(unix)]
+pub(crate) fn sync_dir(path: &Path) -> io::Result<()> {
+    File::open(path)?.sync_all()
+}
+
+#[cfg(not(unix))]
+pub(crate) fn sync_dir(_: &Path) -> io::Result<()> {
     Ok(())
 }
 
@@ -38,6 +53,9 @@ pub(crate) fn temp_beside(path: &Path) -> PathBuf {
 /// Writes the whole file under a temporary name and renames it into place,
 /// so a reader sees the old bytes or the new ones.
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        private_dir(parent)?;
+    }
     let tmp = temp_beside(path);
     let result = create_private(&tmp).and_then(|mut f| {
         f.write_all(bytes)?;
