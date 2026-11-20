@@ -52,6 +52,7 @@ fn a_move_hands_the_seat_over_and_back() {
     let (sent, received) = (sent.unwrap(), received.unwrap());
     assert_eq!((sent.generation, received.generation, received.from.as_str(), received.again), (2, 2, "desk", false));
     assert!(holds(&w.tower) && !holds(&w.desk));
+    assert_eq!(code(w.tower.seal("notes", Source::Folder(None), Vec::new())), Some(Code::NotOpened), "sealing before opening would replace what arrived");
     assert_eq!(opens(&w.tower), None);
     assert_eq!(read_tree(&w.path("tower-notes")), vec![("a.md".into(), "a".into()), ("deep/b.md".into(), "b".into())]);
     assert_eq!(opens(&w.desk), Some(Code::NotTheHolder));

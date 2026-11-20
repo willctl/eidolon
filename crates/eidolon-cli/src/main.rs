@@ -71,7 +71,7 @@ enum Cmd {
         #[arg(long, value_name = "FILE", conflicts_with = "command")]
         out: Option<PathBuf>,
         /// After the ack, remove this machine's copy at the target's path.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "out")]
         clear: bool,
         /// The command that carries the offer and brings the ack back, such as `ssh tower eidolon receive`.
         #[arg(last = true, value_name = "COMMAND")]

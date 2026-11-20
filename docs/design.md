@@ -29,7 +29,7 @@ Files are written whole under a temporary name and renamed into place, owner-onl
 
 ## One holder
 
-The seat says which machine holds a target. Each seat is a record of the target, a generation, the holder, the previous holder, the SHA-256 of the bundle and a time, stored as the exact JSON bytes that were signed. A machine may seal or open a target only when the newest seat names it and no move is pending.
+The seat says which machine holds a target. Each seat is a record of the target, a generation, the holder, the previous holder, the SHA-256 of the bundle and a time, stored as the exact JSON bytes that were signed. A machine may seal or open a target only when the newest seat names it and no move is pending. A seat that arrived from another machine must be opened at the target's path before the folder there is sealed, or the seal is refused with `not_opened`: the folder would not yet hold what arrived.
 
 `rules::accept_seat` decides whether one seat may follow another:
 

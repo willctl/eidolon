@@ -32,6 +32,7 @@ codes! {
     UnknownHolder => "unknown_holder",
     NoPath => "no_path",
     NotSealed => "not_sealed",
+    NotOpened => "not_opened",
     AppRunning => "app_running",
     MovePending => "move_pending",
     NoPending => "no_pending",

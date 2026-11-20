@@ -315,6 +315,9 @@ impl Home {
             Err(e) if e.code() == Some(Code::NotSealed) => Vec::new(),
             Err(e) => return Err(e),
         };
+        if let (Some(last), Source::Folder(None)) = (chain.last(), &source) {
+            self.opened_here(name, last)?;
+        }
         let recipients = self.recipients(&holders, extra)?;
         let dir = self.dir(name).join("bundles");
         files::private_dir(&dir).map_err(io_err("make the bundles folder"))?;
@@ -359,6 +362,24 @@ impl Home {
         Ok(Sealed { target: name.to_owned(), generation: seat.record.generation, bundle: written.sha256, size: written.size, counts })
     }
 
+    /// A seat that came from another machine names a bundle the folder here
+    /// does not have yet. Sealing the folder before opening would replace
+    /// that bundle with whatever the folder holds.
+    fn opened_here(&self, name: &str, last: &SignedSeat) -> Result<()> {
+        if last.record.previous.as_ref().unwrap_or(&last.record.holder) == self.me() {
+            return Ok(());
+        }
+        let opened = fs::read_to_string(self.dir(name).join("opened")).ok().and_then(|g| g.trim().parse::<u64>().ok());
+        if opened == Some(last.record.generation) {
+            return Ok(());
+        }
+        Err(Error::refused(
+            Code::NotOpened,
+            format!("Generation {} of {name} arrived here and has not been opened at its path.", last.record.generation),
+            format!("Run `eidolon open {name}` first, or seal from a folder you name with --from."),
+        ))
+    }
+
     /// Restores the newest bundle, into a folder or as a tar.
     pub fn open_target(&self, name: &str, dest: Dest<'_>, limits: Limits) -> Result<Opened> {
         let target = self.target(name)?;
@@ -368,10 +389,14 @@ impl Home {
         let generation = last.record.generation;
         match dest {
             Dest::Folder(given) => {
+                let at_target = given.is_none();
                 let path = self.path_or(name, given)?;
                 swap::recover(&path)?;
                 let lock = hold(&path, &target)?;
                 let counts = unpack_with(bundle::open(&bundle, &self.key)?, &path, lock, limits)?;
+                if at_target {
+                    write_private(&self.dir(name).join("opened"), generation.to_string().as_bytes()).map_err(io_err("note the open"))?;
+                }
                 Ok(Opened { target: name.to_owned(), generation, to: Some(path), counts })
             }
             Dest::Tar(out) => {
