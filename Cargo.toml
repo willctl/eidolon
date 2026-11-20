@@ -25,17 +25,16 @@ eidolon-testkit = { path = "crates/eidolon-testkit" }
 eidolon-vault = { path = "crates/eidolon-vault" }
 eidolon-view = { path = "crates/eidolon-view" }
 # Adytum keeps the cells Eidolon opens in, and XenoNet's crates sign and name
-# the identities. Both are path dependencies on checkouts beside this one until
-# their repositories are pushed; then each line becomes
-# `{ git = "https://github.com/willctl/<repo>" }` and Cargo.lock pins the commit.
-adytum-driver = { path = "../adytum/crates/adytum-driver" }
-adytum-exec = { path = "../adytum/crates/adytum-exec" }
-adytum-ledger = { path = "../adytum/crates/adytum-ledger" }
-adytum-lima = { path = "../adytum/crates/adytum-lima" }
-adytum-model = { path = "../adytum/crates/adytum-model" }
-xenonet-id = { path = "../xenonet-adytum/crates/xenonet-id" }
-xenonet-os = { path = "../xenonet-adytum/crates/xenonet-os" }
-xenonet-text = { path = "../xenonet-adytum/crates/xenonet-text" }
+# the identities. Both are pinned to a commit. XenoNet's pin is the first one
+# with `Purpose::EIDOLON_MOVE`.
+adytum-driver = { git = "https://github.com/willctl/adytum", rev = "73926512cab68ad41b44b1eb35fa5baf0912f462" }
+adytum-exec = { git = "https://github.com/willctl/adytum", rev = "73926512cab68ad41b44b1eb35fa5baf0912f462" }
+adytum-ledger = { git = "https://github.com/willctl/adytum", rev = "73926512cab68ad41b44b1eb35fa5baf0912f462" }
+adytum-lima = { git = "https://github.com/willctl/adytum", rev = "73926512cab68ad41b44b1eb35fa5baf0912f462" }
+adytum-model = { git = "https://github.com/willctl/adytum", rev = "73926512cab68ad41b44b1eb35fa5baf0912f462" }
+xenonet-id = { git = "https://github.com/willctl/xenonet", rev = "4bf134d2fee5682127a3b70d665344b8f88ae302" }
+xenonet-os = { git = "https://github.com/willctl/xenonet", rev = "4bf134d2fee5682127a3b70d665344b8f88ae302" }
+xenonet-text = { git = "https://github.com/willctl/xenonet", rev = "4bf134d2fee5682127a3b70d665344b8f88ae302" }
 async-trait = "0.1"
 base64 = "0.23"
 bytes = "1"
