@@ -131,6 +131,14 @@ fn a_bomb_stops_at_the_limit() {
     assert_eq!(code, Some(Code::TooLarge), "a compression bomb");
 }
 
+#[cfg(not(unix))]
+#[test]
+fn a_link_is_refused_where_links_are_not_restored() {
+    let tar = Raw::new().file("a.txt", "a").link("to-a", "a.txt").done();
+    assert_eq!(refused(&tar, Limits::default()), Some(Code::UnsafeEntry));
+}
+
+#[cfg(unix)]
 #[test]
 fn a_clean_tar_replaces_the_folder_with_its_modes_times_and_inside_links() {
     let tar = Raw::new()
