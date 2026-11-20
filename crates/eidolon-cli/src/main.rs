@@ -161,7 +161,9 @@ enum TargetCmd {
     },
     Ls,
     /// Print a target's rules (or a preset's) and its state here.
-    Show { name: String },
+    Show {
+        name: String,
+    },
 }
 
 fn main() -> ExitCode {
@@ -205,7 +207,9 @@ fn home_dir(cli: &Cli) -> eidolon::Result<PathBuf> {
     if let Some(home) = &cli.home {
         return Ok(home.clone());
     }
-    std::env::home_dir().map(|h| h.join(".eidolon")).ok_or_else(|| Error::refused(Code::NoPath, "There is no home folder to keep Eidolon's home in.", "Pass --home or set EIDOLON_HOME."))
+    std::env::home_dir()
+        .map(|h| h.join(".eidolon"))
+        .ok_or_else(|| Error::refused(Code::NoPath, "There is no home folder to keep Eidolon's home in.", "Pass --home or set EIDOLON_HOME."))
 }
 
 fn run(cli: Cli) -> eidolon::Result<()> {
@@ -231,7 +235,9 @@ fn run(cli: Cli) -> eidolon::Result<()> {
         }
         Cmd::Target(TargetCmd::Add { name, preset, file, path }) => {
             let target = match (preset, file) {
-                (Some(p), _) => Some(Target::preset(&p).ok_or_else(|| Error::refused(Code::UnknownTarget, format!("There is no preset {p:?}."), format!("Presets: {}.", Target::presets().collect::<Vec<_>>().join(", "))))?),
+                (Some(p), _) => Some(Target::preset(&p).ok_or_else(|| {
+                    Error::refused(Code::UnknownTarget, format!("There is no preset {p:?}."), format!("Presets: {}.", Target::presets().collect::<Vec<_>>().join(", ")))
+                })?),
                 (None, Some(f)) => Some(Target::parse(&std::fs::read_to_string(&f).map_err(|e| Error::Io { doing: format!("read {}", f.display()), source: e })?)?),
                 (None, None) => None,
             };
@@ -280,11 +286,17 @@ fn run(cli: Cli) -> eidolon::Result<()> {
             out.show(json!({ "target": target, "to": to, "offer": file, "pending": true }), &text)
         }
         Cmd::Send { target, to, out: None, clear, command } => {
-            let (program, args) = command
-                .split_first()
-                .ok_or_else(|| Error::refused(Code::NoPath, "Send needs a command after `--`, or --out.", format!("Run `eidolon send {target} --to {to} -- ssh {to} eidolon receive`.")))?;
+            let (program, args) = command.split_first().ok_or_else(|| {
+                Error::refused(Code::NoPath, "Send needs a command after `--`, or --out.", format!("Run `eidolon send {target} --to {to} -- ssh {to} eidolon receive`."))
+            })?;
             home.start_move(&target, &to)?;
-            let mut child = Command::new(program).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().map_err(|e| Error::Io { doing: format!("run {}", program.to_string_lossy()), source: e })?;
+            let mut child = Command::new(program)
+                .args(args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .map_err(|e| Error::Io { doing: format!("run {}", program.to_string_lossy()), source: e })?;
             let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
                 return Err(Error::refused(Code::BadAck, "The command's stdin and stdout were not piped.", "Run it again."));
             };

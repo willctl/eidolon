@@ -12,6 +12,7 @@ publish.workspace = true
 [[bin]]
 name = "eidolon"
 path = "src/main.rs"
+doc = false
 
 [dependencies]
 clap.workspace = true
@@ -19,6 +20,7 @@ eidolon.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+tar.workspace = true
 tempfile.workspace = true
 
 [lints]
