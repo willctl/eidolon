@@ -192,9 +192,11 @@ impl Home {
         let mut ack = Vec::new();
         let read = from_receiver.by_ref().take(SMALL).read_to_end(&mut ack);
         if ack.is_empty() {
-            sent?;
-            read.map_err(io_err("read the ack"))?;
-            return Err(unsettled(name, "The receiver sent no ack."));
+            let why = match (sent.err().map(|e| e.to_string()), read.err().map(|e| e.to_string())) {
+                (Some(e), _) | (None, Some(e)) => format!("The receiver sent no ack ({e})"),
+                (None, None) => "The receiver sent no ack.".to_owned(),
+            };
+            return Err(unsettled(name, &why));
         }
         match self.settle_with_ack(name, &ack, clear)? {
             Settled::Moved(moved) => Ok(moved),
@@ -260,6 +262,7 @@ impl Home {
     /// say which move it was.
     pub fn receive(&self, input: impl Read, mut output: impl Write, limits: Limits) -> Result<Received> {
         let incoming = self.root().join("incoming");
+        files::remove_dir_if_present(&incoming).map_err(io_err("clear what a cut receive left"))?;
         files::private_dir(&incoming).map_err(io_err("make the incoming folder"))?;
         let tmp = Incoming(files::temp_beside(&incoming.join("bundle")));
         let (ack, result) = match read_offer(input, &tmp.0, limits) {
