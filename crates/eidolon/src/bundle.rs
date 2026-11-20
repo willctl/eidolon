@@ -5,9 +5,9 @@ use crate::error::{io_err, Code, Error, Result};
 use crate::key::{HolderKey, MachineKey};
 use age::secrecy::SecretString;
 use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
-use std::fmt::Write as _;
 use std::iter;
 use std::path::Path;
 use std::str::FromStr;
@@ -26,7 +26,8 @@ impl Recipient {
     /// `ssh-rsa` key, or a plugin's `age1<plugin>1...`, such as a YubiKey's.
     pub fn parse(text: &str) -> Result<Recipient> {
         let text = text.trim();
-        let bad = || Error::refused(Code::BadRecipient, format!("{text:?} is not an age recipient."), "Give an `age1...` or `ssh-ed25519 ...` recipient, or one an age plugin printed.");
+        let bad =
+            || Error::refused(Code::BadRecipient, format!("{text:?} is not an age recipient."), "Give an `age1...` or `ssh-ed25519 ...` recipient, or one an age plugin printed.");
         if text.starts_with("ssh-") {
             return age::ssh::Recipient::from_str(text).map(|r| Recipient(Box::new(r))).map_err(|_| bad());
         }
@@ -35,9 +36,9 @@ impl Recipient {
         }
         let plugin = age::plugin::Recipient::from_str(text).map_err(|_| bad())?;
         let name = plugin.plugin().to_owned();
-        age::plugin::RecipientPluginV1::new(&name, &[plugin], &[], Quiet)
-            .map(|r| Recipient(Box::new(r)))
-            .map_err(|_| Error::refused(Code::BadRecipient, format!("The age plugin `age-plugin-{name}` is not on PATH."), format!("Install age-plugin-{name}, or leave that recipient out.")))
+        age::plugin::RecipientPluginV1::new(&name, &[plugin], &[], Quiet).map(|r| Recipient(Box::new(r))).map_err(|_| {
+            Error::refused(Code::BadRecipient, format!("The age plugin `age-plugin-{name}` is not on PATH."), format!("Install age-plugin-{name}, or leave that recipient out."))
+        })
     }
 
     /// One recipient per line, `#` comments, as age's `-R` reads.
@@ -130,7 +131,11 @@ pub(crate) fn open(path: &Path, key: &MachineKey) -> Result<impl Read> {
     let decryptor = age::Decryptor::new_buffered(BufReader::new(file)).map_err(damaged)?;
     let identity = key.identity()?;
     let reader = decryptor.decrypt(iter::once(&identity as &dyn age::Identity)).map_err(|e| match e {
-        age::DecryptError::NoMatchingKeys => Error::refused(Code::NotForThisMachine, "The bundle is not encrypted to this machine's key.", "Check that this machine was on the holder list when the target was sealed."),
+        age::DecryptError::NoMatchingKeys => Error::refused(
+            Code::NotForThisMachine,
+            "The bundle is not encrypted to this machine's key.",
+            "Check that this machine was on the holder list when the target was sealed.",
+        ),
         e => damaged(e),
     })?;
     zstd::Decoder::new(reader).map_err(io_err("start decompressing the bundle"))

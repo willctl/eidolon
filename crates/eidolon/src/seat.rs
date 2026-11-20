@@ -36,7 +36,8 @@ impl SignedSeat {
     }
 
     pub fn from_parts(bytes: Vec<u8>, signature: String) -> Result<SignedSeat> {
-        let record = serde_json::from_slice(&bytes).map_err(|e| Error::refused(Code::BadOffer, format!("A seat record does not read: {e}."), "Ask the sender for its seats again."))?;
+        let record =
+            serde_json::from_slice(&bytes).map_err(|e| Error::refused(Code::BadOffer, format!("A seat record does not read: {e}."), "Ask the sender for its seats again."))?;
         Ok(SignedSeat { record, bytes, signature })
     }
 

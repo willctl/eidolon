@@ -19,10 +19,7 @@ pub struct Holders(Vec<Holder>);
 /// Names of holders and targets: letters, digits, `.`, `_` and `-`, at most
 /// 64, not starting with `-` or `.`.
 pub fn check_name(what: &str, name: &str) -> Result<()> {
-    let ok = !name.is_empty()
-        && name.len() <= 64
-        && !name.starts_with(['-', '.'])
-        && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+    let ok = !name.is_empty() && name.len() <= 64 && !name.starts_with(['-', '.']) && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
     if ok {
         Ok(())
     } else {
@@ -64,7 +61,11 @@ impl Holders {
             return Ok(false);
         }
         if let Some(other) = self.0.iter().find(|h| h.name == holder.name || h.key == holder.key) {
-            return Err(Error::refused(Code::BadHolder, format!("The holder list already has {} with that name or key.", other.name), "Each machine is listed once, under one name."));
+            return Err(Error::refused(
+                Code::BadHolder,
+                format!("The holder list already has {} with that name or key.", other.name),
+                "Each machine is listed once, under one name.",
+            ));
         }
         self.0.push(holder);
         Ok(true)

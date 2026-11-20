@@ -58,7 +58,8 @@ impl Target {
     }
 
     pub fn parse(text: &str) -> Result<Target> {
-        let target: Target = toml::from_str(text).map_err(|e| Error::refused(Code::BadTarget, format!("The target does not read: {}", e.message()), "Fix the TOML; `eidolon target show firefox` prints an example."))?;
+        let target: Target = toml::from_str(text)
+            .map_err(|e| Error::refused(Code::BadTarget, format!("The target does not read: {}", e.message()), "Fix the TOML; `eidolon target show firefox` prints an example."))?;
         target.rules()?;
         Ok(target)
     }
@@ -71,7 +72,11 @@ impl Target {
         let locks: Vec<String> = self.closed.iter().flat_map(|c| [c.unix_lock.clone(), c.windows_lock.clone()]).flatten().collect();
         for lock in &locks {
             if lock.is_empty() || lock.contains(['/', '\\', ':', '\0']) || lock == "." || lock == ".." {
-                return Err(Error::refused(Code::BadTarget, format!("The lock {lock:?} is not a file name in the target's folder."), "Name a file directly in the folder, such as `.parentlock`."));
+                return Err(Error::refused(
+                    Code::BadTarget,
+                    format!("The lock {lock:?} is not a file name in the target's folder."),
+                    "Name a file directly in the folder, such as `.parentlock`.",
+                ));
             }
         }
         Ok(Rules { include: globs(&self.include)?, exclude: globs(&self.exclude)?, locks })
@@ -82,7 +87,11 @@ fn globs(patterns: &[String]) -> Result<GlobSet> {
     let mut set = GlobSetBuilder::new();
     for pattern in patterns {
         pattern_is_inside(pattern)?;
-        let glob = GlobBuilder::new(pattern).literal_separator(true).backslash_escape(true).build().map_err(|e| Error::refused(Code::BadTarget, format!("The pattern {pattern:?} does not read: {e}."), "Write a glob such as `cache2` or `storage/**/*.sqlite`."))?;
+        let glob = GlobBuilder::new(pattern)
+            .literal_separator(true)
+            .backslash_escape(true)
+            .build()
+            .map_err(|e| Error::refused(Code::BadTarget, format!("The pattern {pattern:?} does not read: {e}."), "Write a glob such as `cache2` or `storage/**/*.sqlite`."))?;
         set.add(glob);
     }
     set.build().map_err(|e| Error::refused(Code::BadTarget, format!("The patterns do not build: {e}."), "Simplify them."))
@@ -125,7 +134,18 @@ mod tests {
         for kept in ["cookies.sqlite", "cookies.sqlite-wal", "key4.db", "logins.json", "prefs.js", "storage/default/https+++example.com/ls/data.sqlite", "extensions/a@b.xpi"] {
             assert!(rules.keeps(kept), "{kept}");
         }
-        for left in [".parentlock", "parent.lock", "lock", "cache2/entries/x", "startupCache/startupCache.8.little", "storage/temporary/x", "gmp-widevinecdm/1/x", "crashes/events/x", "a.tmp", "safebrowsing"] {
+        for left in [
+            ".parentlock",
+            "parent.lock",
+            "lock",
+            "cache2/entries/x",
+            "startupCache/startupCache.8.little",
+            "storage/temporary/x",
+            "gmp-widevinecdm/1/x",
+            "crashes/events/x",
+            "a.tmp",
+            "safebrowsing",
+        ] {
             assert!(!rules.keeps(left), "{left}");
         }
         assert!(rules.excludes("cache2"), "a left-out folder is pruned whole");

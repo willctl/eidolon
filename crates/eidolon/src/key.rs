@@ -62,7 +62,8 @@ impl HolderKey {
 impl FromStr for HolderKey {
     type Err = Error;
     fn from_str(s: &str) -> Result<HolderKey> {
-        let key = PublicKey::from_openssh(s.trim()).map_err(|_| Error::refused(Code::BadHolder, "That is not an OpenSSH public key.", "Use the line `eidolon key show` prints."))?;
+        let key =
+            PublicKey::from_openssh(s.trim()).map_err(|_| Error::refused(Code::BadHolder, "That is not an OpenSSH public key.", "Use the line `eidolon key show` prints."))?;
         HolderKey::new(&key)
     }
 }
@@ -119,7 +120,9 @@ impl MachineKey {
     }
 
     pub fn from_openssh(pem: &str) -> Result<MachineKey> {
-        let private = PrivateKey::from_openssh(pem).map_err(|_| Error::refused(Code::BadHolder, "The machine key is not an unencrypted OpenSSH private key.", "Point --key-file at a key `ssh-keygen -t ed25519 -N ''` made."))?;
+        let private = PrivateKey::from_openssh(pem).map_err(|_| {
+            Error::refused(Code::BadHolder, "The machine key is not an unencrypted OpenSSH private key.", "Point --key-file at a key `ssh-keygen -t ed25519 -N ''` made.")
+        })?;
         MachineKey::from_private(private)
     }
 
@@ -183,7 +186,8 @@ fn only_owner_reads(_: &std::path::Path) -> Result<()> {
 }
 
 fn keyring_key() -> Result<String> {
-    let no_store = |e: keyring::Error| Error::refused(Code::NoKeyStore, format!("The key store did not answer: {e}."), "Pass --key-file or set EIDOLON_KEY_FILE on a machine without one.");
+    let no_store =
+        |e: keyring::Error| Error::refused(Code::NoKeyStore, format!("The key store did not answer: {e}."), "Pass --key-file or set EIDOLON_KEY_FILE on a machine without one.");
     let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(no_store)?;
     match entry.get_password() {
         Ok(pem) => Ok(pem),

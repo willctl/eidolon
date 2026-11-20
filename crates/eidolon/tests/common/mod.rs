@@ -1,5 +1,4 @@
-#![expect(clippy::allow_attributes, reason = "each test file uses a different part of this module, so `expect` would fail in some")]
-#![allow(dead_code, reason = "each test file uses part of this")]
+#![allow(dead_code, clippy::unwrap_used, reason = "test helpers, each test file uses part of them; a failure should say where")]
 
 use eidolon::{Home, KeySource, Target};
 use std::fs;

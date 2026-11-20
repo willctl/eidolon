@@ -25,7 +25,9 @@ pub fn hold(dir: &Path, closed: &Closed) -> Result<Option<AppLock>> {
     let path = dir.join(name);
     match take(&path) {
         Ok(file) => Ok(Some(AppLock { _file: file })),
-        Err(e) if held_by_another(&e) => Err(Error::refused(Code::AppRunning, format!("{} is running on {}.", closed.app, dir.display()), format!("Quit {} and run the command again.", closed.app))),
+        Err(e) if held_by_another(&e) => {
+            Err(Error::refused(Code::AppRunning, format!("{} is running on {}.", closed.app, dir.display()), format!("Quit {} and run the command again.", closed.app)))
+        }
         Err(e) => Err(io_err(format!("take the lock {}", path.display()))(e)),
     }
 }

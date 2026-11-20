@@ -33,11 +33,19 @@ pub fn accept_seat(holders: &Holders, target: &str, current: Option<&SignedSeat>
     }
     let signer = current.map_or(&n.holder, |c| &c.record.holder);
     if !next.signed_by(signer) {
-        return Err(Refusal::new(Code::SeatNotSignedByHolder, "That seat was not signed by the machine that holds the one before it.", "Move the target from the machine that holds it."));
+        return Err(Refusal::new(
+            Code::SeatNotSignedByHolder,
+            "That seat was not signed by the machine that holds the one before it.",
+            "Move the target from the machine that holds it.",
+        ));
     }
     may_hold(holders, &n.holder)?;
     if n.previous.as_ref() != current.map(|c| &c.record.holder) {
-        return Err(Refusal::new(Code::StaleGeneration, "That seat does not name the current holder as the previous one.", "Ask the sender to start the move again from the current seat."));
+        return Err(Refusal::new(
+            Code::StaleGeneration,
+            "That seat does not name the current holder as the previous one.",
+            "Ask the sender to start the move again from the current seat.",
+        ));
     }
     Ok(())
 }
@@ -99,7 +107,8 @@ mod tests {
     }
 
     fn seat(target: &str, generation: u64, holder: &MachineKey, previous: Option<&MachineKey>, signed_by: &MachineKey) -> SignedSeat {
-        let record = SeatRecord { target: target.into(), generation, holder: holder.public().clone(), previous: previous.map(|p| p.public().clone()), bundle: "ab".repeat(32), at: 1 };
+        let record =
+            SeatRecord { target: target.into(), generation, holder: holder.public().clone(), previous: previous.map(|p| p.public().clone()), bundle: "ab".repeat(32), at: 1 };
         SignedSeat::sign(record, signed_by).unwrap()
     }
 

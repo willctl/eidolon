@@ -207,7 +207,9 @@ impl Home {
     fn path_or(&self, name: &str, given: Option<PathBuf>) -> Result<PathBuf> {
         match given {
             Some(p) => std::path::absolute(&p).map_err(io_err(format!("read the path {}", p.display()))),
-            None => self.path_of(name)?.ok_or_else(|| Error::refused(Code::NoPath, format!("{name} has no path on this machine."), format!("Run `eidolon target add {name} --path <folder>`, or pass a folder."))),
+            None => self.path_of(name)?.ok_or_else(|| {
+                Error::refused(Code::NoPath, format!("{name} has no path on this machine."), format!("Run `eidolon target add {name} --path <folder>`, or pass a folder."))
+            }),
         }
     }
 
@@ -289,7 +291,9 @@ impl Home {
             ));
         }
         let chain = self.seats(name, holders)?;
-        let last = chain.last().cloned().ok_or_else(|| Error::refused(Code::NotSealed, format!("{name} has not been sealed on this machine."), format!("Run `eidolon seal {name}` on the machine that has it.")))?;
+        let last = chain.last().cloned().ok_or_else(|| {
+            Error::refused(Code::NotSealed, format!("{name} has not been sealed on this machine."), format!("Run `eidolon seal {name}` on the machine that has it."))
+        })?;
         if last.record.holder != *self.me() {
             return Err(Error::refused(
                 Code::NotTheHolder,
@@ -382,7 +386,11 @@ impl Home {
     pub(crate) fn checked_bundle(&self, name: &str, seat: &SignedSeat) -> Result<PathBuf> {
         let path = self.bundle_path(name, &seat.record.bundle);
         if !path.is_file() {
-            return Err(Error::refused(Code::NotSealed, format!("The bundle of generation {} is missing.", seat.record.generation), format!("Seal {name} again, or move it here again.")));
+            return Err(Error::refused(
+                Code::NotSealed,
+                format!("The bundle of generation {} is missing.", seat.record.generation),
+                format!("Seal {name} again, or move it here again."),
+            ));
         }
         if bundle::sha256_of(&path)? != seat.record.bundle {
             return Err(Error::refused(Code::BundleChanged, "The bundle's bytes differ from the ones its seat names.", format!("Seal {name} again, or move it here again.")));
@@ -453,5 +461,9 @@ pub(crate) fn hold(path: &Path, target: &Target) -> Result<Option<AppLock>> {
 
 pub(crate) fn unknown_target(name: &str) -> Error {
     let presets: Vec<_> = Target::presets().collect();
-    Error::refused(Code::UnknownTarget, format!("There is no target {name:?} here."), format!("Add it with `eidolon target add {name} --path <folder>` (presets: {}) or `--file <target.toml>`.", presets.join(", ")))
+    Error::refused(
+        Code::UnknownTarget,
+        format!("There is no target {name:?} here."),
+        format!("Add it with `eidolon target add {name} --path <folder>` (presets: {}) or `--file <target.toml>`.", presets.join(", ")),
+    )
 }

@@ -42,7 +42,11 @@ fn unsafe_entry(rel: &str, why: &str) -> Error {
 }
 
 fn too_large(limits: &Limits) -> Error {
-    Error::refused(Code::TooLarge, format!("The archive holds more than {} bytes or {} entries.", limits.max_bytes, limits.max_entries), "Raise --max-size if the target is really that big.")
+    Error::refused(
+        Code::TooLarge,
+        format!("The archive holds more than {} bytes or {} entries.", limits.max_bytes, limits.max_entries),
+        "Raise --max-size if the target is really that big.",
+    )
 }
 
 /// Writes clean entries: relative paths, permission bits only, no owners.
@@ -145,7 +149,11 @@ pub(crate) fn capture_folder<W: Write>(root: &Path, rules: &Rules, out: &mut Tar
 }
 
 fn walk<W: Write>(dir: &Path, prefix: &str, rules: &Rules, out: &mut TarOut<W>) -> Result<()> {
-    let mut names: Vec<_> = fs::read_dir(dir).map_err(io_err(format!("list {}", dir.display())))?.map(|e| e.map(|e| e.file_name())).collect::<io::Result<_>>().map_err(io_err(format!("list {}", dir.display())))?;
+    let mut names: Vec<_> = fs::read_dir(dir)
+        .map_err(io_err(format!("list {}", dir.display())))?
+        .map(|e| e.map(|e| e.file_name()))
+        .collect::<io::Result<_>>()
+        .map_err(io_err(format!("list {}", dir.display())))?;
     names.sort();
     for name in names {
         let path = dir.join(&name);
@@ -157,13 +165,13 @@ fn walk<W: Write>(dir: &Path, prefix: &str, rules: &Rules, out: &mut TarOut<W>) 
         let meta = fs::symlink_metadata(&path).map_err(io_err(format!("read {}", path.display())))?;
         let kind = meta.file_type();
         let writing = || io_err(format!("archive {rel}"));
+        let keep = rules.keeps(&rel);
         if kind.is_dir() {
-            if rules.keeps(&rel) {
+            if keep {
                 out.dir(&rel, mode_of(&meta), secs(meta.modified())).map_err(writing())?;
             }
             walk(&path, &rel, rules, out)?;
-        } else if !rules.keeps(&rel) {
-            continue;
+        } else if !keep {
         } else if kind.is_file() {
             let mut file = fs::File::open(&path).map_err(io_err(format!("open {}", path.display())))?;
             out.file(&rel, mode_of(&meta), secs(meta.modified()), meta.len(), &mut file).map_err(writing())?;

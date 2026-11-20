@@ -1,6 +1,7 @@
 //! While the app holds its lock, nothing is captured or replaced; while
 //! Eidolon holds it, the app cannot take it. The lock is held by a second
 //! process, as an app would hold it: this test binary run again.
+#![allow(clippy::unwrap_used, reason = "in a test, a failure should say where")]
 #![cfg(unix)]
 
 mod common;

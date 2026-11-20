@@ -122,7 +122,11 @@ impl Home {
     /// already pending for `to`, so a move cut off is sent again unchanged.
     pub fn start_move(&self, name: &str, to: &str) -> Result<SignedSeat> {
         let holders = self.holders()?;
-        let receiver = holders.by_name(to).ok_or_else(|| Error::refused(Code::UnknownHolder, format!("{to} is not on the holder list."), "Add it with `eidolon holders add` first."))?.key.clone();
+        let receiver = holders
+            .by_name(to)
+            .ok_or_else(|| Error::refused(Code::UnknownHolder, format!("{to} is not on the holder list."), "Add it with `eidolon holders add` first."))?
+            .key
+            .clone();
         if receiver == *self.me() {
             return Err(Error::refused(Code::NotAHolder, format!("{to} is this machine."), "Move the target to another machine."));
         }
@@ -288,12 +292,20 @@ impl Home {
         crate::holders::check_name("target", &name)?;
         let holders = self.holders()?;
         if !holders.same_as(&offer.holders) {
-            return Err(Error::refused(Code::HoldersDiffer, "The sender's holder list differs from this machine's.", "Make the lists the same on both machines with `eidolon holders add`, then move again."));
+            return Err(Error::refused(
+                Code::HoldersDiffer,
+                "The sender's holder list differs from this machine's.",
+                "Make the lists the same on both machines with `eidolon holders add`, then move again.",
+            ));
         }
         may_hold(&holders, self.me())?;
         match self.target_if_any(&name)? {
             Some(have) if have != offer.target => {
-                return Err(Error::refused(Code::TargetDiffers, format!("{name} is here with other rules than the sender's."), "Make the rules the same on both machines, then move again."));
+                return Err(Error::refused(
+                    Code::TargetDiffers,
+                    format!("{name} is here with other rules than the sender's."),
+                    "Make the rules the same on both machines, then move again.",
+                ));
             }
             _ => {}
         }
@@ -303,7 +315,11 @@ impl Home {
         let local = self.seats(&name, &holders)?;
         accept_chain(&holders, &name, local.last(), &offer.chain)?;
         if next.record.holder != *self.me() {
-            return Err(Error::refused(Code::NotTheHolder, format!("That seat names {}, not this machine.", holders.name_of(&next.record.holder)), "Send it to the machine it names."));
+            return Err(Error::refused(
+                Code::NotTheHolder,
+                format!("That seat names {}, not this machine.", holders.name_of(&next.record.holder)),
+                "Send it to the machine it names.",
+            ));
         }
         let from = holders.name_of(next.record.previous.as_ref().unwrap_or(&next.record.holder));
         let received = |again| Received { target: name.clone(), generation: next.record.generation, from: from.clone(), again };
@@ -411,4 +427,3 @@ fn unsettled(name: &str, why: &str) -> Error {
         format!("Send it again with the same `eidolon send`, or run `eidolon settle {name} --confirm <ack>`, or `--abandon` if the receiver surely took nothing."),
     )
 }
-

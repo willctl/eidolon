@@ -1,4 +1,5 @@
 //! Sealing a target and opening it again, on the holder only.
+#![allow(clippy::unwrap_used, reason = "in a test, a failure should say where")]
 
 mod common;
 
@@ -99,10 +100,14 @@ fn a_tar_from_elsewhere_is_filtered_and_cleaned_and_open_can_write_one() {
     let mut out = Vec::new();
     w.desk.open_target("notes", Dest::Tar(&mut out), Limits::default()).unwrap();
     let mut tar = tar::Archive::new(&out[..]);
-    let seen: Vec<_> = tar.entries().unwrap().map(|e| {
-        let e = e.unwrap();
-        (e.path().unwrap().display().to_string(), e.header().mode().unwrap(), e.header().uid().unwrap())
-    }).collect();
+    let seen: Vec<_> = tar
+        .entries()
+        .unwrap()
+        .map(|e| {
+            let e = e.unwrap();
+            (e.path().unwrap().display().to_string(), e.header().mode().unwrap(), e.header().uid().unwrap())
+        })
+        .collect();
     assert_eq!(seen, vec![("a.md".to_owned(), 0o755, 0), ("b.md".to_owned(), 0o640, 0)], "no setuid bit, no owner, nothing left out");
 }
 

@@ -1,5 +1,6 @@
 //! A tar that tries to write outside the folder it fills, or to fill too
 //! much, is refused before anything at the destination changes.
+#![allow(clippy::unwrap_used, reason = "in a test, a failure should say where")]
 
 mod common;
 
@@ -162,4 +163,3 @@ fn a_clean_tar_replaces_the_folder_with_its_modes_times_and_inside_links() {
         assert_eq!(std::fs::metadata(dest.join("sub")).unwrap().permissions().mode() & 0o777, 0o750);
     }
 }
-
