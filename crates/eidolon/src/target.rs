@@ -49,6 +49,11 @@ fn everything() -> Vec<String> {
 }
 
 impl Target {
+    /// A whole folder, with no rules beyond what restore always refuses.
+    pub fn folder() -> Target {
+        Target { about: String::new(), include: everything(), exclude: Vec::new(), closed: None }
+    }
+
     pub fn presets() -> impl Iterator<Item = &'static str> {
         PRESETS.iter().map(|(name, _)| *name)
     }

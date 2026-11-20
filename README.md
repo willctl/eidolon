@@ -109,7 +109,7 @@ Globs are relative to the folder; `*` stays within one folder and `**` crosses t
 | --- | --- |
 | `key show` | Prints this machine's public key, making the key the first time. |
 | `holders add <name> <key>`, `holders ls` | Lists the machines that may hold a target. |
-| `target add <name> [--preset P \| --file F] [--path DIR]`, `target ls`, `target show <name>` | Adds a target, or sets its path on this machine. |
+| `target add <name> [--preset P \| --file F] [--path DIR]`, `target ls`, `target show <name>` | Adds a target (a path alone takes the whole folder), or sets its path on this machine. |
 | `seal <target> [--from DIR \| --from-tar -] [-r RECIPIENT]` | Captures the folder into a new bundle and signs the next seat. |
 | `open <target> [--to DIR \| --tar] [--max-size 16G]` | Restores the newest bundle into a fresh folder and swaps it into place. |
 | `send <target> --to <holder> [--clear] (-- COMMAND \| --out FILE)` | Moves the seat to another holder. |

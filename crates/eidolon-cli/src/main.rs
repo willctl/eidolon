@@ -146,7 +146,7 @@ enum HoldersCmd {
 
 #[derive(Subcommand)]
 enum TargetCmd {
-    /// Add a target from a preset or a TOML file, or set its path on this machine.
+    /// Add a target from a preset, a TOML file or just a folder, or set its path on this machine.
     Add {
         name: String,
         /// Take the rules of this preset (`firefox`). The default when the name is a preset.

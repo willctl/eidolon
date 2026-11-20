@@ -143,7 +143,11 @@ impl Home {
                 return Err(Error::refused(Code::TargetDiffers, format!("{name} is already here with other rules."), "Pick another name, or keep the rules it has."));
             }
             (None, None) => {
-                let target = Target::preset(name).ok_or_else(|| unknown_target(name))?;
+                let target = match (Target::preset(name), &path) {
+                    (Some(preset), _) => preset,
+                    (None, Some(_)) => Target::folder(),
+                    (None, None) => return Err(unknown_target(name)),
+                };
                 self.write_target(name, &target)?;
             }
             (None, Some(target)) => self.write_target(name, &target)?,

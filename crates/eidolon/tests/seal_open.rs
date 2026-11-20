@@ -121,3 +121,11 @@ fn a_target_add_with_other_rules_is_refused_and_a_path_alone_is_set() {
     assert!(w.desk.add_target("firefox", None, None).unwrap().about.contains("Firefox"));
     assert_eq!(w.desk.add_target("custom", None, None).err().and_then(|e| e.code()), Some(Code::UnknownTarget));
 }
+
+#[test]
+fn a_path_alone_makes_a_target_of_the_whole_folder() {
+    let w = World::new();
+    write_tree(&w.path("plain"), &[("a", "a"), ("cache/b", "b")]);
+    w.desk.add_target("plain", None, Some(w.path("plain"))).unwrap();
+    assert_eq!(w.desk.seal("plain", Source::Folder(None), Vec::new()).unwrap().counts.files, 2);
+}
