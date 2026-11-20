@@ -27,7 +27,7 @@ pub use archive::{Counts, Limits};
 pub use bundle::{hex, sha256_of, Recipient};
 pub use error::{Code, Error, Refusal, Result};
 pub use holders::{check_name, Holder, Holders};
-pub use home::{Dest, Home, Opened, Sealed, Source, Status, Verified};
+pub use home::{unpack, Dest, Home, Opened, Sealed, Source, Status, Verified};
 pub use key::{HolderKey, KeySource, MachineKey, ACK_NAMESPACE, KEYRING_SERVICE, KEYRING_USER, SEAT_NAMESPACE};
 pub use lock::{hold as hold_app_lock, AppLock};
 pub use moving::{Ack, AckStatement, Moved, Received, Settled};

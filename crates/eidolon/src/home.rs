@@ -367,12 +367,7 @@ impl Home {
                 let path = self.path_or(name, given)?;
                 swap::recover(&path)?;
                 let lock = hold(&path, &target)?;
-                let counts = swap::replace(&path, lock, |fresh| {
-                    let mut sink = FolderSink::new(fresh);
-                    let counts = archive::restore(bundle::open(&bundle, &self.key)?, limits, &mut sink)?;
-                    sink.finish()?;
-                    Ok(counts)
-                })?;
+                let counts = unpack_with(bundle::open(&bundle, &self.key)?, &path, lock, limits)?;
                 Ok(Opened { target: name.to_owned(), generation, to: Some(path), counts })
             }
             Dest::Tar(out) => {
@@ -434,6 +429,22 @@ impl Home {
     pub fn ls(&self) -> Result<Vec<Status>> {
         self.targets()?.iter().map(|t| self.status(t)).collect()
     }
+}
+
+/// Unpacks a tar into a fresh folder beside `dest` with every restore check,
+/// then swaps it in place of `dest`. Nothing at `dest` changes unless every
+/// entry passed.
+pub fn unpack(tar: impl Read, dest: &Path, limits: Limits) -> Result<Counts> {
+    unpack_with(tar, dest, None, limits)
+}
+
+fn unpack_with(tar: impl Read, dest: &Path, lock: Option<AppLock>, limits: Limits) -> Result<Counts> {
+    swap::replace(dest, lock, |fresh| {
+        let mut sink = FolderSink::new(fresh);
+        let counts = archive::restore(tar, limits, &mut sink)?;
+        sink.finish()?;
+        Ok(counts)
+    })
 }
 
 pub(crate) fn hold(path: &Path, target: &Target) -> Result<Option<AppLock>> {

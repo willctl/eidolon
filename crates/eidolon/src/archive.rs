@@ -163,6 +163,7 @@ fn walk<W: Write>(dir: &Path, prefix: &str, rules: &Rules, out: &mut TarOut<W>) 
             }
             walk(&path, &rel, rules, out)?;
         } else if !rules.keeps(&rel) {
+            continue;
         } else if kind.is_file() {
             let mut file = fs::File::open(&path).map_err(io_err(format!("open {}", path.display())))?;
             out.file(&rel, mode_of(&meta), secs(meta.modified()), meta.len(), &mut file).map_err(writing())?;
@@ -288,7 +289,7 @@ pub(crate) fn restore(input: impl Read, limits: Limits, sink: &mut dyn Sink) -> 
             return Err(unsafe_entry(&rel, "lies under a link"));
         }
         let h = entry.header();
-        let mode = h.mode().map_err(reading)?;
+        let mode = h.mode().map_err(|_| unsafe_entry(&rel, "has a mode that does not read"))?;
         let mtime = h.mtime().unwrap_or(0);
         if mode & 0o7000 != 0 {
             return Err(unsafe_entry(&rel, "has a setuid, setgid or sticky bit"));
@@ -299,10 +300,7 @@ pub(crate) fn restore(input: impl Read, limits: Limits, sink: &mut dyn Sink) -> 
                 if counts.bytes.saturating_add(size) > limits.max_bytes {
                     return Err(too_large(&limits));
                 }
-                sink.file(&rel, mode, mtime, size, &mut entry).map_err(|e| match e {
-                    Error::Io { source, .. } if hit.get() || source.kind() == io::ErrorKind::Other && hit.get() => too_large(&limits),
-                    e => e,
-                })?;
+                sink.file(&rel, mode, mtime, size, &mut entry).map_err(|e| if hit.get() { too_large(&limits) } else { e })?;
                 counts.files += 1;
                 counts.bytes += size;
             }
