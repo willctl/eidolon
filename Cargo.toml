@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.88"
 license = "MIT"
@@ -13,26 +13,32 @@ publish = false
 
 [workspace.dependencies]
 eidolon = { path = "crates/eidolon" }
-# Adytum keeps the cells, XenoNet's crates sign and store keys. Both are
-# pinned to a commit on their main.
-adytum = { git = "https://github.com/willctl/adytum", rev = "a1d58a88439b4654c26552a0beef89dd57a07ee9", default-features = false, features = ["lima"] }
-xenonet-id = { git = "https://github.com/willctl/xenonet", rev = "16964d348f0ac58941c9610f286103279eab64eb" }
-xenonet-os = { git = "https://github.com/willctl/xenonet", rev = "16964d348f0ac58941c9610f286103279eab64eb" }
-xenonet-text = { git = "https://github.com/willctl/xenonet", rev = "16964d348f0ac58941c9610f286103279eab64eb" }
-base64 = "0.23"
-flate2 = "1"
-getrandom = "0.3"
-libc = "0.2"
-proptest = { version = "1", default-features = false, features = ["std"] }
-ring = "0.17"
-rmcp = { version = "3.9", default-features = false, features = ["server", "transport-io"] }
-schemars = { version = "1", default-features = false, features = ["derive", "std"] }
+# The bundle's encryption, opened by stock `age`. Pinned: 0.13 changes its
+# crypto dependencies. `ssh` makes each machine's Ed25519 key a recipient,
+# `plugin` lets extra recipients live on a YubiKey or a Secure Enclave.
+age = { version = "=0.12.1", default-features = false, features = ["ssh", "plugin"] }
+# The command line.
+clap = { version = "4.6", features = ["derive"] }
+# Include and exclude rules of a target.
+globset = { version = "0.4.18", default-features = false }
+# The machine key in the operating system's key store.
+keyring = "4.2"
+# The app's own lock (fcntl on Unix), held while a target is read or replaced.
+rustix = { version = "1.1", default-features = false, features = ["fs", "std"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = "1"
+# The hash a seat names its bundle by.
 sha2 = "0.10"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-std", "io-util", "time", "sync", "process", "signal", "fs"] }
-x25519-dalek = { version = "3", default-features = false, features = ["static_secrets", "zeroize"] }
-zeroize = "1"
+# Each machine's key, and SSHSIG seats that `ssh-keygen -Y verify` checks.
+ssh-key = { version = "0.6.7", default-features = false, features = ["std", "ed25519", "rand_core", "getrandom"] }
+# The bundle's archive. 0.4.45 fixed RUSTSEC-2026-0067 and -0068.
+tar = { version = "0.4.46", default-features = false }
+# Targets are TOML.
+toml = { version = "1", default-features = false, features = ["parse", "display", "serde", "std"] }
+# The bundle's compression.
+zstd = { version = "0.14", default-features = false }
+proptest = { version = "1", default-features = false, features = ["std"] }
+tempfile = "3"
 
 [profile.release]
 lto = "thin"
@@ -55,8 +61,6 @@ rust_2018_idioms = { level = "warn", priority = -1 }
 unused_qualifications = "warn"
 
 [workspace.lints.clippy]
-# The default groups (correctness, suspicious, style, complexity, perf) and
-# pedantic, less the pedantic checks below that are taste rather than bugs.
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 doc_markdown = "allow"
@@ -67,32 +71,19 @@ module_name_repetitions = "allow"
 needless_pass_by_value = "allow"
 too_many_lines = "allow"
 similar_names = "allow"
-many_single_char_names = "allow"
 items_after_statements = "allow"
 struct_excessive_bools = "allow"
-fn_params_excessive_bools = "allow"
-unreadable_literal = "allow"
-single_match_else = "allow"
 if_not_else = "allow"
 match_same_arms = "allow"
-implicit_hasher = "allow"
-# Sizes, offsets and counts are converted with intent, and floats are
-# compared exactly where a value was just stored.
-float_cmp = "allow"
 cast_possible_truncation = "allow"
 cast_precision_loss = "allow"
 cast_sign_loss = "allow"
-cast_possible_wrap = "allow"
-# Nothing a person or a file can reach may panic. Tests may (clippy.toml).
 unwrap_used = "warn"
 panic = "warn"
 todo = "warn"
 unimplemented = "warn"
 dbg_macro = "warn"
-# stdout is the MCP protocol and the command's output; stderr is the log.
+# stdout carries the command's output and the move's answer; stderr is the log.
 print_stdout = "warn"
-undocumented_unsafe_blocks = "warn"
-# #[expect] rather than #[allow], so an exception no longer needed shows,
-# and each one says why.
 allow_attributes = "warn"
 allow_attributes_without_reason = "warn"
