@@ -1,65 +1,82 @@
 # Eidolon design
 
-An eidolon is one identity's state: a set of facets, each a folder or a Firefox profile, sealed in a machine's vault. It opens in one Adytum cell behind its wall, and it moves whole between the machines on its holder list. This page states what Eidolon guarantees, and why each guarantee is built the way it is. The [README](../README.md) covers using it.
+Eidolon seals a target, moves it between the machines on a holder list, and opens it again. This page states what it guarantees and how each guarantee is built. The [README](../README.md) covers using it.
 
-## One seat
+## Built from standard parts
 
-Exactly one machine may open an eidolon at a time. That machine holds the seat, a signed record of the eidolon, a generation number, the holder, and the holder before it. A move writes the next generation, signed by the sender and naming the receiver. A receiver accepts a seat only if it is the next generation, signed by the holder of the current one, and names a machine on the holder list (`rules::accept_seat`).
+Every format is one that other tools read, and Eidolon composes them:
 
-A signature alone would let two machines claim generation 2 from the same generation 1. The generation and the previous holder make each seat follow exactly one other, so a copied or replayed seat is refused as stale.
+- The bundle is a tar, compressed with zstd, encrypted with age (`age 0.12`, `zstd`, `tar` crates). `age -d -i key | zstd -d | tar -x` opens it.
+- Each machine has one Ed25519 OpenSSH key (`ssh-key`). It is an age `ssh-ed25519` recipient for bundles and signs seats and acks as SSHSIG, which `ssh-keygen -Y verify` checks.
+- The holder list is an OpenSSH `allowed_signers` file, with each line limited to Eidolon's two namespaces.
+- Targets are TOML, globs are `globset`, the key store is `keyring`, and the app lock is `fcntl` through `rustix` on Unix and an unshared open from the standard library on Windows.
 
-An eidolon is `sealed`, `opening` in a cell, `open` in a cell, or `retired`. `opening` is written before the first file reaches the cell, and `open` only once all of them are there. A command killed in between leaves `opening`, and the next open finishes it, or clears that cell first if the person opens elsewhere. A seal writes every chunk, then the head, then the state, so a kill between any two leaves a holding that still opens. The kill tests (`eidolon-cli/tests/kill.rs`) stop the binary at each of these steps.
+The library is synchronous Rust with `unsafe` denied. It knows nothing of VMs or cells: a tar stream goes in (`seal --from-tar -`) and comes out (`open --tar`), and a move is bytes on any duplex.
 
-## The holder list
+## A home
 
-The holder list is fixed when the eidolon is made: each holder is a name, an Ed25519 key that signs seats and heads, and an X25519 key the eidolon's key is wrapped to. A machine off the list can neither receive nor open the eidolon. A machine that already holds the eidolon refuses a move whose holder list differs from its own, so a sender cannot add a machine on the way.
+```text
+holders                          allowed_signers of every holder
+recipients                       extra age recipients, one per line (optional)
+targets/<name>/target.toml       the rules, the same on every machine
+targets/<name>/path              where the target is on this machine
+targets/<name>/seats/<gen>.json  each seat, with <gen>.json.sig beside it
+targets/<name>/bundles/<sha>.age the bundle the newest seat names
+targets/<name>/pending/          a move that waits for its ack
+```
 
-An eidolon opens only from a head that some holder signed. The seat names who may open it now, but the head was signed by whoever sealed it last, which after a few moves may be neither the holder nor the sender.
+Files are written whole under a temporary name and renamed into place, owner-only. A seat's signature is written before its record, so a record on disk always has its signature.
 
-## The vault
+## One holder
 
-Files are cut into content-defined chunks (16 KiB minimum, 64 KiB average, 256 KiB maximum), so an edit changes only the chunks around it. One 32-byte key per eidolon gives, by HKDF-SHA256, a name key and a content key. A chunk's name is an HMAC-SHA256 of its plaintext under the name key, so two eidolons that share a file share no chunk name. Its body is deflated and sealed with ChaCha20-Poly1305 under the content key, with a nonce taken from the name. Equal plaintexts therefore seal to equal bytes and are stored once, and no keystream ever covers two different messages.
+The seat says which machine holds a target. Each seat is a record of the target, a generation, the holder, the previous holder, the SHA-256 of the bundle and a time, stored as the exact JSON bytes that were signed. A machine may seal or open a target only when the newest seat names it and no move is pending.
 
-A chunk that does not open, or opens to a plaintext with another name, is refused. The manifest, which lists every file with its mode, size and chunk names, is itself sealed into chunks. Only the head is in the clear: the eidolon, the generation and the names of the manifest's chunks, signed by a holder.
+`rules::accept_seat` decides whether one seat may follow another:
 
-The eidolon key lives in the machine's key store under `eidolon/<id>`, never in a file beside the vault.
+- The first is generation 1, has no previous holder, and is signed by its own holder.
+- Every later one is the next generation, signed by the holder of the seat before it, names a machine on the list, and names that holder as previous.
 
-## The move protocol
+A signature alone would let two machines claim the same generation; the generation and the previous holder make each seat follow exactly one other. Seals and moves both add a generation: a seal names the same holder with a new bundle, a move names the receiver with the same bundle.
 
-A move runs over any byte stream: a pipe, `ssh`, or a stream another program carries. Frames are a u32 length, a type byte and a body.
+A machine keeps every seat, so the history is a chain checked link by link from generation 1 (`rules::accept_chain`). A receiver checks an offered chain from the newest seat it already knows, which must appear in the offer byte for byte. A replayed offer falls short of that seat and is refused as `stale_generation`. Another history that reaches it is refused as `second_seat`. A seat signed by a listed machine that did not hold the one before is refused as `seat_not_signed_by_holder`. The proptests in `rules.rs` cover every generation but the next, every key off the list, and every signer but the holder.
 
-1. The sender sends a hello with a fresh challenge. The receiver answers with its holder key and a signature over the challenge, so the sender knows which listed machine it talks to.
-2. The sender offers the spec, its seat, the head and the names of every chunk the head needs. The receiver checks the spec, the seat and the list, and answers with the names its vault lacks.
-3. The sender sends those chunks as they sit in its vault, still sealed. The receiver keeps them as they arrive, so a cut transfer resumes from what arrived.
-4. The sender writes `pending.json`, then sends the next seat and the eidolon key wrapped to the receiver's X25519 key. The receiver checks the seat, opens every chunk, stores the key and acknowledges with a signature.
-5. Only after a valid acknowledgement does the sender retire its copy and delete its key.
+## Capture
 
-A move killed before the acknowledgement leaves the seat with the sender, and after it with the receiver. A sender that cannot tell, because the stream died after step 4, keeps its copy closed until the person settles it with `eidolon move-settle --abandon` or `--confirm <seat.json>`. A refusal the receiver signs after step 4 undoes the pending move, because the receiver proves it kept nothing. Whatever carries the stream sees sealed chunks and a wrapped key, nothing it can open.
+A target's rules keep a path when an include glob matches it or a folder above it, and no exclude glob does. The app's lock file is never kept, because closing any descriptor to an fcntl-locked file releases the lock. Capture writes regular files, folders and symlinks in name order, with permission bits and modification times and no owners. It leaves out sockets, devices and FIFOs, and fails if a file changes size while it is read. A tar given on standard input passes the same rules; its paths must be relative, and its setuid, setgid and sticky bits are dropped.
 
-## Never hiding automation
+When the target names an app lock, Eidolon takes it as the app does before reading: a non-blocking fcntl write lock on `.parentlock` for Firefox on Unix, an open of `parent.lock` without sharing on Windows. If the app holds it, the seal is refused with `app_running`. While Eidolon holds it, the app cannot start on the folder. With Firefox closed, its SQLite files are consistent; a `-wal` left by a crash is captured with its database.
 
-Eidolon never hides from a site that a browser is driven. There are no stealth preferences, no user-agent edits and no fingerprint changes, and a test (`nothing_hides_automation`) keeps it that way. Hiding automation is an arms race against the sites an identity uses, and losing it costs the identity. A site that asks for a CAPTCHA gets a person in `eidolon view`.
+## Restore
 
-The agent tools act through snapshots and uids. No tool runs arbitrary script, and the page scripts Eidolon runs read the page without writing to it.
+A bundle is opened only after its SHA-256 matches the seat. Each entry is checked before anything is written:
 
-## The automation port is never forwarded
+- Its path must be relative, without `..`, a backslash or a name that is not UTF-8.
+- It must not repeat a path, ignoring case, or lie under a symlink or a file.
+- A symlink must resolve inside the folder, read without touching the disk.
+- Hard links, devices, FIFOs and setuid, setgid or sticky bits are refused.
+- The total size and the entry count are capped (16 GiB and a million entries by default), and so is every byte read from the decompressed stream, PAX headers included, so a compression bomb stops at the cap.
 
-Firefox listens for WebDriver BiDi on the guest's own 127.0.0.1, and the cell's port-forward rules ignore it. The host reaches it as a byte stream: Adytum runs `socat` in the cell and its stdin and stdout carry the WebSocket. Anything that can reach a forwarded automation port can drive a signed-in browser, so no such port exists on the host.
+Entries go into a fresh folder beside the destination, made 0700. Each folder above a file is checked to be a real folder, and files are created with `O_EXCL`. Only when every entry has passed is the destination renamed aside, the new folder renamed in, and the old one removed. A run killed between the renames leaves the old folder aside, and the next run puts it back or finishes. The app's lock is held through the swap; on Windows it is released just before, because a folder with an open file cannot be renamed there. `open --tar` runs the same checks and writes the entries out as a clean tar instead.
 
-## The sign-in window is loopback only
+## A move
 
-`eidolon view` listens on 127.0.0.1 alone, by construction, and each connection reaches the guest's screen share through its own cell stream. VNC's own authentication is weak, so both ends stay on loopback and the secret works for one session. While the window is open, the browser runs as a unit with no automation socket, which is what a site sees, and a marker in the holding makes the tools refuse.
+1. The sender signs the next seat, naming the receiver, and writes it as pending. From then on it neither seals nor opens.
+2. It writes the offer: a tar of the target's rules, the holder list, every seat including the pending one, and the bundle.
+3. The receiver checks that the holder lists are the same, so a sender cannot add a machine on the way, that the rules match any it already has, the seat chain, that the newest seat names it, and the bundle's hash. Then it decrypts the whole bundle through the restore checks without keeping anything.
+4. It keeps the bundle, then the seats, and answers with an ack: a statement of the target, generation, bundle and receiver, with `taken` true or a refusal, signed in the `eidolon-ack@willctl.com` namespace.
+5. The sender checks that the ack is signed by the receiver the pending seat names and matches that seat. A taken ack adds the seat to its chain, which retires its hold, and drops the bundle. With `--clear` it then removes its live copy, under the app's lock. A signed refusal proves the receiver kept nothing, so the pending move is dropped and the seat stays.
 
-## Where Adytum is used
+A move cut before step 4 leaves the receiver without the seat. One cut after it leaves the receiver holding and the sender pending. Running the same `send` again re-sends the same offer, and a receiver that already holds exactly that seat acks again. `settle --confirm` takes an ack carried by hand. `settle --abandon` drops the pending move and is right only when the receiver surely took nothing. An unsigned answer, a broken stream or an ack for another move settles nothing. A receive killed partway leaves only a partial file in `incoming/`, which the next receive removes.
 
-Every call into Adytum is in `crates/eidolon/src/cell.rs`. `adytum::Cells` keeps a cell's wall, its holds and its starts in Adytum's ledger, and its driver runs commands, streams and copies. Adytum writes a copy into a cell as the user it is given, so the files belong to that user and land only where it could write anyway. A folder facet is written by the cell's user. The browser's profile and uploads are written by the browser's own user, so no folder in its home is open to anyone else: the profile lands beside the old one, root swaps the two, and the profile is closed to group and others.
+## Keys
 
-## Next steps
+The key is kept in the system's key store by default, under the service `eidolon` and the user `machine-key`, as an unencrypted OpenSSH private key. `--key-file` points at an OpenSSH key file instead, made 0600 if it is missing and refused if group or others can read it. Extra age recipients (`recipients`, `-r`) can open bundles for recovery but are never holders: only an Ed25519 key on the list can sign a seat.
 
-These were weighed and not adopted:
+## Tests
 
-- fastcdc or iroh-blobs for chunking and transfer: they change the vault's format or add heavy dependencies, and no bug calls for it.
-- age for wrapping keys: it is new cryptography beside ring and x25519-dalek.
-- Mozilla's or Playwright's MCP server in the cell: it needs Node in the image.
-- Lima 2.3's `hostLoopback: false` and `--sync`, which would replace the in-guest guard.
-- Collecting chunks no head names, so a vault stops growing.
+- `rules.rs`, `seat.rs`, `target.rs` and `key.rs` test the rules, the seat bytes, the Firefox preset and the key file.
+- `tests/restore.rs` refuses a malicious tar: `..`, absolute paths, links out, paths through a link, devices, FIFOs, hard links, setuid and setgid, twins and bombs.
+- `tests/lock.rs` holds the lock in a second process, as an app does.
+- `tests/moving.rs` moves over an in-process duplex and cuts it at each step.
+- `eidolon-cli/tests/kill.rs` kills the binary mid-seal, mid-open, mid-send and mid-receive.
+- `eidolon-cli/tests/live.rs` moves a real Firefox profile between two homes, and opens a bundle with stock `age`, `zstd` and `tar` and checks a seat with `ssh-keygen` in a Lima VM.

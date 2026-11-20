@@ -1,61 +1,134 @@
 # Eidolon
 
-Eidolon keeps the state of one identity, a folder of files or a signed-in Firefox profile, as one sealed thing called an eidolon. It opens the eidolon in an [Adytum](https://github.com/willctl/adytum) cell behind the identity's wall, and moves it to another of your machines, sending only the chunks that changed. Exactly one machine can open an eidolon at a time.
+Eidolon seals a folder, such as a Firefox profile, into one encrypted bundle, moves it between your machines so that exactly one of them holds it at a time, and opens it again without letting the bundle write outside its folder.
 
-It is a Rust library, `eidolon`, and a command, `eidolon`, built from `eidolon-cli`.
+It is a thin layer over standard formats. A bundle is `age(zstd(tar))`, encrypted to each machine's Ed25519 OpenSSH key, so `age`, `zstd` and `tar` open it without Eidolon. The record of who holds a folder is a chain of small JSON files signed as SSHSIG, which `ssh-keygen -Y verify` checks. Eidolon is a Rust library, `eidolon`, and a command, `eidolon`, built from `eidolon-cli`. It depends on no other willctl project.
 
 ## Install
-
-Eidolon makes no cells of its own. Set up Adytum first and check it with `adytum doctor`. Then build the command:
 
 ```text
 cargo install --locked --git https://github.com/willctl/eidolon eidolon-cli
 ```
 
-## Move a signed-in browser from desk to tower
+## Move a Firefox profile from desk to tower
 
-Each machine gets its keys once, and lists the other as a holder. The cells `adytum-a` on desk and `adytum-b` on tower are Adytum cells behind `wall_work`.
+Each machine makes its key once and lists every machine, itself too, as a holder. Both lists must be the same.
 
 ```text
-desk$  eidolon machine init --name desk && eidolon machine show > desk.holder.json
-tower$ eidolon machine init --name tower && eidolon machine show > tower.holder.json
-desk$  eidolon new --wall wall_work --holder desk.holder.json --holder tower.holder.json --folder notes=/home/cell/notes --browser web
-desk$  eidolon open <eid> --cell adytum-a
-desk$  eidolon view <eid>
-desk$  eidolon seal <eid>
-desk$  eidolon move <eid> -- ssh tower eidolon receive
-tower$ eidolon open <eid> --cell adytum-b
-desk$  eidolon open <eid> --cell adytum-a
+desk$  eidolon key show
+ssh-ed25519 AAAAC3...desk
+tower$ eidolon key show
+ssh-ed25519 AAAAC3...tower
+
+desk$  eidolon holders add desk ssh-ed25519 AAAAC3...desk
+desk$  eidolon holders add tower ssh-ed25519 AAAAC3...tower
+tower$ eidolon holders add desk ssh-ed25519 AAAAC3...desk
+tower$ eidolon holders add tower ssh-ed25519 AAAAC3...tower
 ```
 
-`eidolon new` prints the eidolon's id. The first open of a browser facet installs Firefox in the cell from Mozilla's repository. `eidolon view` prints a `vnc://127.0.0.1:<port>` address and a one-time secret: sign in through Screen Sharing, then press Enter. After the move, tower opens the eidolon still signed in, and the last command on desk is refused with `retired`.
+Each machine names where the profile lives on it, since profile paths differ by system:
 
-Every command takes `--json`. Exit 0 is done, 1 is a refusal or a failure, and 2 is a mistake in how the command was typed. A refusal has a stable code, such as `second_seat` or `wrong_wall`. Run `eidolon help` for every command.
-
-## Give an agent the browser
-
-`eidolon mcp <eid>` serves the browser of an open eidolon as an MCP server on standard input and output:
-
-```json
-{ "mcpServers": { "web": { "command": "eidolon", "args": ["mcp", "<eid>"] } } }
+```text
+desk$  eidolon target add firefox --path "$HOME/Library/Application Support/Firefox/Profiles/abcd1234.work"
+tower$ eidolon target add firefox --path "%APPDATA%\Mozilla\Firefox\Profiles\efgh5678.work"
 ```
 
-The tools are `list_pages`, `new_page`, `select_page`, `close_page`, `navigate_page`, `navigate_history`, `take_snapshot`, `click_by_uid`, `hover_by_uid`, `fill_by_uid`, `type_text`, `press_key`, `get_page_text`, `screenshot_page`, `upload_file_by_uid`, `list_downloads` and `fetch_download`, named as in Mozilla's Firefox MCP server. They act on elements by the uids of the last snapshot. No tool runs arbitrary script. Files pass through one folder, `~/.eidolon/files/<eid>/`: an upload must resolve to a regular file inside it, and `fetch_download` copies into its `downloads` folder. While the sign-in window is open, the tools are refused. [The skill](skills/eidolon-browser/SKILL.md) tells an agent how to use them.
+Quit Firefox, then seal, move and open:
 
-## Use the library
+```text
+desk$  eidolon seal firefox
+desk$  eidolon send firefox --to tower --clear -- ssh tower eidolon receive
+tower$ eidolon open firefox
+```
 
-`eidolon::home::Home` is a machine's eidolon home. It makes, seals, opens, moves, settles and verifies eidolons, and returns typed results. `eidolon::cell::Cells::system()` opens Adytum's cells. The `browser` feature adds the BiDi client, the sign-in window and the agent tools. The `testing` feature adds `folder_cells`, Adytum's fake driver with each cell's files in a folder, and `FakeBidi`, a fake browser.
+`seal` refuses with `app_running` while Firefox has the profile open, and holds Firefox's own lock while it reads, so Firefox cannot start halfway through. `send` runs the command after `--` as an argument list, never through a shell, writes the offer to its standard input and reads the ack from its standard output. `--clear` removes desk's copy once tower has acked. After the move, `eidolon open firefox` on desk is refused with `not_the_holder`.
+
+## Recipes
+
+Move by hand, with no connection between the machines:
+
+```text
+desk$  eidolon send firefox --to tower --out offer
+tower$ eidolon receive < offer > ack
+desk$  eidolon settle firefox --confirm ack
+```
+
+Seal a folder inside a VM or a cell from its tar, and put it back the same way. `--from-tar -` reads a tar on standard input and keeps what the target's rules keep; `--tar` writes the checked entries as a tar on standard output:
+
+```text
+adytum exec adytum-web -- tar -C /home/cell/profile -c . | eidolon seal web --from-tar -
+eidolon open web --tar | limactl shell work-vm -- tar -x -C /home/cell/profile
+```
+
+`adytum exec` does not pass its standard input to the cell, so into an Adytum cell the tar goes as a file: `eidolon open web --tar > web.tar`, then `adytum cp web.tar adytum-web:/home/cell/web.tar`. That file is not encrypted.
+
+Open a bundle with stock tools, on any machine that has a holder's key:
+
+```text
+age -d -i ~/.ssh/eidolon_key ~/.eidolon/targets/firefox/bundles/<sha256>.age | zstd -d | tar -x -C restored
+```
+
+Check a seat with OpenSSH. The holder list is an `allowed_signers` file. Each seat is signed by the holder before it, or by its own holder at generation 1:
+
+```text
+ssh-keygen -Y verify -f ~/.eidolon/holders -I desk -n eidolon-seat@willctl.com \
+  -s ~/.eidolon/targets/firefox/seats/00000000000000000002.json.sig \
+  < ~/.eidolon/targets/firefox/seats/00000000000000000002.json
+```
+
+Keep a recovery key that can open every bundle but never holds the seat. Any age recipient works: a paper `age1...` key, or a YubiKey or Secure Enclave key through its age plugin. Put one per line in `~/.eidolon/recipients`, or pass `-r` to one seal:
+
+```text
+eidolon seal firefox -r age1yubikey1q...
+```
+
+## Targets
+
+A target is a folder with rules. `firefox` is built in; `eidolon target show firefox` prints it. Its rules leave out what Firefox rebuilds or downloads again (caches, safe-browsing lists, crash reports, telemetry, codec plugins) and keep sign-ins, cookies, history, settings and add-ons. Any other folder is a TOML file of the same shape:
+
+```toml
+about = "Notes and their attachments"
+include = ["**"]
+exclude = ["cache", "*.tmp", "**/.DS_Store"]
+
+[closed]
+app = "Notes"
+unix_lock = ".lock"
+windows_lock = "lock"
+```
+
+```text
+eidolon target add notes --file notes.toml --path ~/notes
+```
+
+Globs are relative to the folder; `*` stays within one folder and `**` crosses them. A path is kept when an `include` glob matches it or a folder above it, and no `exclude` glob does. `[closed]` names the lock file the app holds while it runs: an fcntl write lock on Unix, a file kept open without sharing on Windows. Eidolon takes the same lock before it reads or replaces the folder, and never captures the lock file. `eidolon target add work --preset firefox --path ...` adds a second profile under another name.
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `key show` | Prints this machine's public key, making the key the first time. |
+| `holders add <name> <key>`, `holders ls` | Lists the machines that may hold a target. |
+| `target add <name> [--preset P \| --file F] [--path DIR]`, `target ls`, `target show <name>` | Adds a target, or sets its path on this machine. |
+| `seal <target> [--from DIR \| --from-tar -] [-r RECIPIENT]` | Captures the folder into a new bundle and signs the next seat. |
+| `open <target> [--to DIR \| --tar] [--max-size 16G]` | Restores the newest bundle into a fresh folder and swaps it into place. |
+| `send <target> --to <holder> [--clear] (-- COMMAND \| --out FILE)` | Moves the seat to another holder. |
+| `receive [--max-size 16G]` | Reads an offer on standard input and writes the ack on standard output. |
+| `settle <target> (--confirm ACK \| --abandon) [--clear]` | Finishes a move that was cut off. |
+| `ls`, `verify <target>` | Shows every target and its holder; checks the seats and the bundle. |
+
+Every command takes `--json` and then prints one JSON object; a failure is `{"error": {"code", "message", "fix"}}`. The codes are stable, such as `app_running`, `not_the_holder`, `move_pending` or `unsafe_entry`. Exit 0 is done, 1 is a refusal or a failure, and 2 is a mistake in how the command was typed. With `open --tar` and `receive`, standard output carries data, so the summary goes to standard error.
+
+The home is `~/.eidolon`, or `--home` / `EIDOLON_HOME`. The key lives in the system's key store (the macOS keychain, Windows Credential Manager, or the Secret Service on Linux) under `eidolon` / `machine-key`. On a machine without one, such as a server reached over ssh, pass `--key-file` or set `EIDOLON_KEY_FILE` to an OpenSSH key that only its owner can read; Eidolon makes it if it is missing and refuses it if others can read it.
 
 ## Limits
 
-- The keys are owner-only files under `~/.eidolon/keys`, because this build uses no operating-system key store. Anyone who can read your files as you can read the keys.
-- A site that binds a session to one device, as Device Bound Session Credentials (DBSC) do, or to a fingerprint or a network, asks you to sign in again after a move.
-- The receiving cell needs the same or a newer Firefox than the one that wrote the profile. Firefox does not open a profile from a newer version.
-- Eidolon never hides automation. A site can see that the browser is driven and may ask for a CAPTCHA, which you answer in `eidolon view`.
-- Cells are Adytum's Lima VMs. There is no Windows or WSL driver.
-- Adytum writes a copy into a cell as the cell's user, so a folder facet opens only where that user can write, such as `/home/cell` or `/tmp`.
-- The vault keeps every chunk it ever held. Nothing collects old ones yet.
-- A move runs over a command you name, such as `ssh`. You are responsible for it reaching the right machine; the seat and the holder list hold either way.
+- Moves send the whole bundle every time. zstd keeps a Firefox profile small, but nothing is deduplicated between moves.
+- `--abandon` trusts you: if the receiver did take the seat, both machines then believe they hold it. Run the same `send` again instead whenever the receiver can be reached; it acks a seat it already took.
+- A listed machine is trusted to follow the rules. One that keeps a copy of a bundle can still decrypt it, since every bundle is encrypted to every holder.
+- A site that binds a session to one device, a fingerprint or a network may ask you to sign in again after a move. Firefox does not open a profile that a newer Firefox wrote.
+- On Windows, symlinks in a bundle are refused, and Firefox's lock is released just before the folders are swapped, because Windows cannot rename a folder with an open file in it.
+- Restore keeps permission bits and modification times, not owners, extended attributes or ACLs.
 
 [The design](docs/design.md) says what Eidolon guarantees and why.
 
@@ -63,8 +136,7 @@ The tools are `list_pages`, `new_page`, `select_page`, `close_page`, `navigate_p
 
 ```text
 cargo test --workspace --all-features
-ADYTUM_LIVE=1 cargo test -p eidolon-cli --test live -- --test-threads=1
-ADYTUM_LIVE=1 cargo test -p eidolon-cli --test live_browser -- --test-threads=1
+EIDOLON_LIVE=1 cargo test -p eidolon-cli --test live -- --test-threads=1 --nocapture
 ```
 
-The live tests make VMs named `adytum-test-*` in an Adytum home of their own and delete them at the end, also when a step fails.
+The live tests run a headless Firefox on a throwaway profile in a temporary folder, and make one Lima VM named `adytum-test-*` in a `LIMA_HOME` of their own under `/tmp`, which they delete at the end.

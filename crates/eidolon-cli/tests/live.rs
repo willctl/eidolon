@@ -56,7 +56,11 @@ fn cookie_server(token: &str) -> (String, Arc<Mutex<Vec<Option<String>>>>) {
                 seen2.lock().unwrap().push(cookie);
             }
             let body = "<html><body>eidolon live test</body></html>";
-            let _ = write!(stream, "HTTP/1.1 200 OK\r\nSet-Cookie: eid={token}; Max-Age=86400; Path=/\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nSet-Cookie: eid={token}; Max-Age=86400; Path=/\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
         }
     });
     (url, seen)
@@ -196,7 +200,9 @@ fn stock_tools_open_a_bundle_and_check_a_seat() {
     assert!(install.status.success(), "apt: {}", String::from_utf8_lossy(&install.stderr));
     eprintln!("age in the VM: {}", String::from_utf8_lossy(&install.stdout).trim());
     step(&mut t, "apt install age zstd openssh-client");
-    for (from, to) in [(&bundle, "bundle.age"), (&desk.key, "key"), (&seat, "seat.json"), (&seat.with_extension("json.sig"), "seat.json.sig"), (&desk.home.join("holders"), "holders")] {
+    for (from, to) in
+        [(&bundle, "bundle.age"), (&desk.key, "key"), (&seat, "seat.json"), (&seat.with_extension("json.sig"), "seat.json.sig"), (&desk.home.join("holders"), "holders")]
+    {
         let copied = vm.limactl().args(["copy", from.to_str().unwrap(), &format!("{}:/tmp/{to}", vm.name)]).status().unwrap();
         assert!(copied.success(), "copy {to}");
     }
@@ -206,7 +212,10 @@ fn stock_tools_open_a_bundle_and_check_a_seat() {
     let verified = vm.shell(&format!("ssh-keygen -Y verify -f holders -I desk -n {} -s seat.json.sig < seat.json", eidolon::SEAT_NAMESPACE));
     assert!(verified.status.success(), "ssh-keygen: {}", String::from_utf8_lossy(&verified.stderr));
     eprintln!("{}", String::from_utf8_lossy(&verified.stdout).trim());
-    let forged = vm.shell(&format!("sed 's/\"generation\":1/\"generation\":2/' seat.json > forged.json && ssh-keygen -Y verify -f holders -I desk -n {} -s seat.json.sig < forged.json", eidolon::SEAT_NAMESPACE));
+    let forged = vm.shell(&format!(
+        "sed 's/\"generation\":1/\"generation\":2/' seat.json > forged.json && ssh-keygen -Y verify -f holders -I desk -n {} -s seat.json.sig < forged.json",
+        eidolon::SEAT_NAMESPACE
+    ));
     assert!(!forged.status.success(), "a changed seat does not verify");
     step(&mut t, "stock open and verify");
     drop(vm);
